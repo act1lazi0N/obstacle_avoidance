@@ -1,7 +1,12 @@
 from flask import Flask, Response, request
 import cv2
+import logging
 
 app = Flask(__name__)
+
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
 def go_forward():
     print("[MOTOR] Đang đi THẲNG (Bánh Trái: TIẾN | Bánh Phải: TIẾN)")
 
@@ -37,6 +42,15 @@ def control():
     elif cmd == 'left': turn_left()
     elif cmd == 'right': turn_right()
     return "OK"
+
+# Chụp ảnh nhanh để tránh bị delay
+@app.route('/snapshot')
+def snapshot():
+    success, frame = camera.read()
+    if success:
+        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+        return Response(buffer.tobytes(), mimetype='image/jpeg')
+    return "Lỗi Camera", 500
 
 if __name__ == '__main__':
     print("MOCK PI SERVER ĐANG CHẠY. Đợi lệnh từ server...")
