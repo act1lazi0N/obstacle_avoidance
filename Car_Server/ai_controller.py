@@ -40,6 +40,8 @@ PI_IP = "127.0.0.1"
 SNAPSHOT_URL = f"http://{PI_IP}:5000/snapshot"
 # URL gửi lệnh điều khiển đến Pi
 CONTROL_URL = f"http://{PI_IP}:5000/control"
+# URL khoảng cách:
+DISTANCE_URL = f"http://{PI_IP}:5000/distance"
 
 
 # === CẤU HÌNH THAM SỐ PHÁT HIỆN VÀ ĐIỀU KHIỂN ===
@@ -252,7 +254,7 @@ def main():
 
     try:
         while True:
-            # --- BƯỚC 1: Lấy ảnh từ camera ---
+            # --- Lấy ảnh từ camera ---
             frame = capture_frame()
 
             if frame is None:
@@ -275,7 +277,7 @@ def main():
             # Reset bộ đếm lỗi khi nhận được ảnh thành công
             camera_fail_count = 0
 
-            # --- BƯỚC 2: Kiểm tra độ sáng (lớp chống mù) ---
+            # --- Kiểm tra độ sáng (lớp chống mù) ---
             if not check_brightness(frame):
                 # Ảnh quá tối → dừng xe ngay lập tức
                 if current_action != "stop":
@@ -286,10 +288,32 @@ def main():
                 cv2.waitKey(1)
                 continue
 
-            # --- BƯỚC 3: Phát hiện vật cản bằng YOLOv5 ---
+            # --- Kiểm tra chống phản chiếu
+            try:
+                resp_dist = requests.get(DISTANCE_URL, timeout=0.2)
+                sonic_distance = float(resp_dist.text)
+            except:
+                sonic_distance = 999  # Nếu rớt mạng thì tạm coi như an toàn
+
+            if sonic_distance < 25:
+                print(f"CẢNH BÁO SIÊU ÂM: VẬT CẢN VÔ HÌNH CÁCH {sonic_distance}cm! PHANH GẤP!")
+
+                if current_action != "avoiding":
+                    send_command('right')
+                    avoidance_timer = time.time() + TURN_DURATION
+                    current_action = "avoiding"
+
+                cv2.imshow("Goc Nhin Cua Xe", frame)
+                cv2.waitKey(1)
+                continue
+
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = model(img_rgb)
+
+            # --- Phát hiện vật cản bằng YOLOv5 ---
             danger, turn_direction, annotated_frame = detect_obstacles(model, frame)
 
-            # --- BƯỚC 4: Điều khiển xe dựa trên kết quả phân tích ---
+            # --- Điều khiển xe dựa trên kết quả phân tích ---
             # Chỉ thay đổi hành động khi đã hết thời gian trễ (avoidance_timer)
             if time.time() >= avoidance_timer:
                 if danger:
@@ -310,7 +334,7 @@ def main():
                         send_command("go")
                         current_action = "go"
 
-            # --- BƯỚC 5: Hiển thị ảnh trên màn hình (debug) ---
+            # --- Hiển thị ảnh trên màn hình ---
             cv2.imshow("Car's Perspective", annotated_frame)
 
             # Nhấn 'q' để thoát vòng lặp

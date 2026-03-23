@@ -16,7 +16,6 @@ import cv2
 import numpy as np
 from flask import Flask, Response, request
 
-
 # === CẤU HÌNH LOGGING ===
 logging.basicConfig(
     level=logging.INFO,
@@ -29,13 +28,12 @@ logger = logging.getLogger(__name__)
 werkzeug_log = logging.getLogger('werkzeug')
 werkzeug_log.setLevel(logging.ERROR)
 
-
 # === CẤU HÌNH ===
-CAMERA_INDEX = 0            # Index webcam (0 = webcam mặc định)
-CAMERA_WIDTH = 320          # Chiều rộng ảnh (pixel)
-CAMERA_HEIGHT = 240         # Chiều cao ảnh (pixel)
-JPEG_QUALITY = 50           # Chất lượng ảnh JPEG (0-100)
-USE_MOCK_FRAME = False      # Cờ: True nếu không tìm thấy webcam, dùng ảnh giả
+CAMERA_INDEX = 0  # Index webcam (0 = webcam mặc định)
+CAMERA_WIDTH = 320  # Chiều rộng ảnh (pixel)
+CAMERA_HEIGHT = 240  # Chiều cao ảnh (pixel)
+JPEG_QUALITY = 50  # Chất lượng ảnh JPEG (0-100)
+USE_MOCK_FRAME = False  # Cờ: True nếu không tìm thấy webcam, dùng ảnh giả
 
 
 # === GIẢ LẬP MOTOR ===
@@ -162,6 +160,7 @@ def video_feed():
     Streaming video MJPEG qua HTTP (dùng để xem trực tiếp trên trình duyệt).
     Truy cập: http://127.0.0.1:5000/video_feed
     """
+
     def generate_frames():
         """Generator: liên tục đọc frame và gửi dưới dạng MJPEG stream."""
         while True:
@@ -175,10 +174,10 @@ def video_feed():
             )
             if ret:
                 yield (
-                    b'--frame\r\n'
-                    b'Content-Type: image/jpeg\r\n\r\n'
-                    + buffer.tobytes()
-                    + b'\r\n'
+                        b'--frame\r\n'
+                        b'Content-Type: image/jpeg\r\n\r\n'
+                        + buffer.tobytes()
+                        + b'\r\n'
                 )
 
     return Response(
@@ -232,13 +231,20 @@ def snapshot():
     logger.error("Không thể tạo ảnh snapshot!")
     return "Lỗi Camera", 500
 
+# --- GIẢ LẬP CẢM BIẾN SIÊU ÂM ---
+@app.route('/distance')
+def get_distance():
+
+    fake_distance = 100
+    return str(fake_distance)
+
 
 @app.route('/')
 def index():
     """Trang chủ hiển thị trạng thái mock server."""
-    mode = "📹 Webcam" if not USE_MOCK_FRAME else "🎨 Ảnh giả (Mock)"
+    mode = "Webcam" if not USE_MOCK_FRAME else " Ảnh giả (Mock)"
     return (
-        "<h1>🧪 Mock Pi Server (Mô phỏng)</h1>"
+        "<h1>Mock Pi Server (Mô phỏng)</h1>"
         f"<p>Chế độ camera: {mode}</p>"
         "<p>API endpoints:</p>"
         "<ul>"
