@@ -1,0 +1,9 @@
+# Thư viện cần thiết cho AI Controller (chạy trên Local Server / Cloud)
+# Cài đặt: pip install -r requirement.txt
+
+opencv-python-headless    # Xử lý ảnh (không cần GUI trên server)
+requests                  # Gửi HTTP request đến Raspberry Pi
+torch                     # PyTorch - framework chạy model YOLOv5
+torchvision               # Thư viện hỗ trợ cho PyTorch (xử lý ảnh)
+numpy                     # Thư viện tính toán mảng số
+pandas                    # Đọc kết quả detection dạng DataFrame

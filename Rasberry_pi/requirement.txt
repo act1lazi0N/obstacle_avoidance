@@ -1,0 +1,10 @@
+# Thư viện cần thiết cho Robot Server (chạy trên Raspberry Pi)
+# Cài đặt: pip install -r requirement.txt
+# Lưu ý: picamera2 nên cài qua apt trên Raspberry Pi OS:
+#   sudo apt install -y python3-picamera2
+
+flask                     # Web framework - tạo HTTP API server
+picamera2                 # Điều khiển PiCamera trên Raspberry Pi
+RPi.GPIO                  # Điều khiển chân GPIO (motor, cảm biến)
+opencv-python-headless    # Encode ảnh JPEG để truyền qua HTTP
+numpy                     # Thư viện tính toán mảng số
