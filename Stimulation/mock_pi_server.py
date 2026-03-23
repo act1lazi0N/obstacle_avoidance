@@ -39,23 +39,27 @@ USE_MOCK_FRAME = False  # Cờ: True nếu không tìm thấy webcam, dùng ản
 # === GIẢ LẬP MOTOR ===
 # Các hàm này CHỈ in ra console, không điều khiển phần cứng thật
 def go_forward():
-    """Mô phỏng lệnh đi thẳng → in ra console."""
+    """Mô phỏng lệnh đi thẳng"""
     logger.info("[MOTOR] Đang đi THẲNG (Bánh Trái: TIẾN | Bánh Phải: TIẾN)")
 
 
 def stop_car():
-    """Mô phỏng lệnh dừng → in ra console."""
+    """Mô phỏng lệnh dừng"""
     logger.info("[MOTOR] Đã DỪNG LẠI")
 
 
 def turn_left():
-    """Mô phỏng lệnh rẽ trái → in ra console."""
+    """Mô phỏng lệnh rẽ trái"""
     logger.info("[MOTOR] Rẽ TRÁI (Bánh Trái: LÙI | Bánh Phải: TIẾN)")
 
 
 def turn_right():
-    """Mô phỏng lệnh rẽ phải → in ra console."""
+    """Mô phỏng lệnh rẽ phải"""
     logger.info("[MOTOR] Rẽ PHẢI (Bánh Trái: TIẾN | Bánh Phải: LÙI)")
+
+def go_backward():
+    """Mô phỏng đi lùi"""
+    print("🔙 [MOTOR] Đi LÙI (Bánh Trái: LÙI | Bánh Phải: LÙI)")
 
 
 # === KHỞI TẠO CAMERA ===
@@ -203,6 +207,8 @@ def control():
         turn_left()
     elif cmd == 'right':
         turn_right()
+    elif cmd == 'backward':
+        go_backward()
     else:
         logger.warning(f"Nhận lệnh không hợp lệ: '{cmd}'")
         return f"Lệnh không hợp lệ: {cmd}", 400
