@@ -1,3 +1,9 @@
+# Tên file: ai_controller.py
+# Môi trường: Local Server / Cloud (chạy trên máy tính cá nhân hoặc máy chủ)
+# Mô tả: Bộ điều khiển AI sử dụng YOLOv5 kết hợp Sensor Fusion (Siêu âm) để
+#        phát hiện vật cản và điều khiển xe Raspberry Pi qua HTTP API.
+# -----------------------------------------------------------------------
+
 import time
 import warnings
 import signal

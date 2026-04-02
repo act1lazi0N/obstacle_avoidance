@@ -3,7 +3,6 @@
 # Mô tả: Flask server chạy trực tiếp trên Raspberry Pi, cung cấp:
 #         - API điều khiển motor (đi thẳng, rẽ trái/phải, dừng)
 #         - API chụp ảnh từ PiCamera (snapshot / video feed)
-#         - Cơ chế watchdog: tự dừng motor khi mất kết nối với server AI
 #         - Graceful shutdown: tự cleanup GPIO khi tắt chương trình
 # -----------------------------------------------------------------------
 
