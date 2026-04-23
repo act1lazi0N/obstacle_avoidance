@@ -42,7 +42,15 @@ pip install torch torchvision torchaudio requests opencv-python numpy pandas
 3. Nếu đã cắm cảm biến siêu âm, đặt USE_ULTRASONIC = True.
 4. Chạy bộ điều khiển:
 ```bash
-python3 ai_controller.py
+python3 robot_server.py
+```
+**Bước 2: Cấu hình và chạy Trí tuệ nhân tạo trên Laptop**
+1. Mở file ai_controller.py.
+2. Thay đổi biến PI_IP thành địa chỉ IP thực tế của Pi.
+3. Nếu đã cắm cảm biến siêu âm, đặt USE_ULTRASONIC = True.
+4. Chạy bộ điều khiển:
+```bash
+python ai_controller.py
 ```
 
 ## 5. Các tính năng an toàn
