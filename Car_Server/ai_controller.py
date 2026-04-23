@@ -22,7 +22,7 @@ log.setLevel(logging.ERROR)
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger(__name__)
 
-PI_IP = "127.0.0.1"
+PI_IP = "192.168.82.250"
 SNAPSHOT_URL = f"http://{PI_IP}:5000/snapshot"
 CONTROL_URL = f"http://{PI_IP}:5000/control"
 DISTANCE_URL = f"http://{PI_IP}:5000/distance"
