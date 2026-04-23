@@ -22,7 +22,8 @@ log.setLevel(logging.ERROR)
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger(__name__)
 
-PI_IP = "192.168.82.250"
+PI_IP = "127.0.0.1"
+# PI_IP = "192.168.82.250"
 SNAPSHOT_URL = f"http://{PI_IP}:5000/snapshot"
 CONTROL_URL = f"http://{PI_IP}:5000/control"
 DISTANCE_URL = f"http://{PI_IP}:5000/distance"
@@ -33,6 +34,8 @@ DEAD_END_AREA_THRESHOLD = 50000
 BRIGHTNESS_THRESHOLD = 15
 MAX_CAMERA_FAILURES = 5
 FRAME_CENTER_X = 160
+
+USE_ULTRASONIC = False
 
 
 def load_model():
@@ -140,6 +143,7 @@ def main():
                     send_command('stop')
                     current_action = "stop"
                 time.sleep(1)
+                cv2.waitKey(1)
                 continue
 
             camera_fail_count = 0
@@ -153,14 +157,17 @@ def main():
                 cv2.waitKey(1)
                 continue
 
-            # Lớp bảo vệ 2: Cảm biến siêu âm (Đã xóa các khối gọi Model thừa)
-            try:
-                resp_dist = requests.get(DISTANCE_URL, timeout=0.2)
-                sonic_distance = float(resp_dist.text)
-            except:
+            # Lớp bảo vệ 2: Cảm biến siêu âm
+            if USE_ULTRASONIC:
+                try:
+                    resp_dist = requests.get(DISTANCE_URL, timeout=0.2)
+                    sonic_distance = float(resp_dist.text)
+                except:
+                    sonic_distance = 999
+            else:
                 sonic_distance = 999
 
-                # Phân tích hình ảnh
+            # Phân tích hình ảnh
             danger, turn_direction, visual_dead_end, annotated_frame = detect_obstacles(model, frame)
 
             # Dung hợp kết quả Ngõ cụt (Siêu âm < 10cm HOẶC Ảnh chiếm > 50000 pixels)
@@ -172,12 +179,12 @@ def main():
             # Ra quyết định điều khiển
             if time.time() >= avoidance_timer:
                 if is_dead_end:
-                    logger.warning("🚨 NGÕ CỤT! Đang cài số lùi...")
+                    logger.warning("NGÕ CỤT! Đang cài số lùi...")
                     send_command('backward')
-                    avoidance_timer = time.time() + 1.0  # Lùi lại 1 giây để tìm đường thoát
+                    avoidance_timer = time.time() + 1.0
                     current_action = "backward"
                 elif is_danger:
-                    logger.info(f"⚠ VẬT CẢN! Bẻ lái sang {turn_direction.upper()}")
+                    logger.info(f"VẬT CẢN! Bẻ lái sang {turn_direction.upper()}")
                     send_command(turn_direction)
                     avoidance_timer = time.time() + TURN_DURATION
                     current_action = "avoiding"

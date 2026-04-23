@@ -51,10 +51,14 @@ CAMERA_WIDTH = 320
 CAMERA_HEIGHT = 240
 JPEG_QUALITY = 50
 
+TRIG_PIN = 5
+ECHO_PIN = 6
+
 def setup_gpio():
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
+    # Motor
     GPIO.setup(MOTOR_LEFT_EN, GPIO.OUT)
     GPIO.setup(MOTOR_LEFT_IN1, GPIO.OUT)
     GPIO.setup(MOTOR_LEFT_IN2, GPIO.OUT)
@@ -66,10 +70,15 @@ def setup_gpio():
     pwm_left = GPIO.PWM(MOTOR_LEFT_EN, 1000)
     pwm_right = GPIO.PWM(MOTOR_RIGHT_EN, 1000)
 
+    # Cảm biến siêu âm
+    GPIO.setup(TRIG_PIN, GPIO.OUT)
+    GPIO.setup(ECHO_PIN, GPIO.IN)
+    GPIO.output(TRIG_PIN, False)
+
     pwm_left.start(0)
     pwm_right.start(0)
 
-    logger.info("GPIO initialized for 2 motors.")
+    logger.info("GPIO initialized for Motor & Ultrasonic.")
     return pwm_left, pwm_right
 
 def go_forward(pwm_left, pwm_right):
@@ -80,15 +89,6 @@ def go_forward(pwm_left, pwm_right):
     pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
     pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
     logger.info("[MOTOR] Moving forward")
-
-def stop_car(pwm_left, pwm_right):
-    GPIO.output(MOTOR_LEFT_IN1, GPIO.LOW)
-    GPIO.output(MOTOR_LEFT_IN2, GPIO.LOW)
-    GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
-    GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
-    pwm_left.ChangeDutyCycle(0)
-    pwm_right.ChangeDutyCycle(0)
-    logger.info("[MOTOR] Stopped")
 
 def turn_left(pwm_left, pwm_right):
     GPIO.output(MOTOR_LEFT_IN1, GPIO.LOW)
@@ -107,6 +107,26 @@ def turn_right(pwm_left, pwm_right):
     pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
     pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
     logger.info("[MOTOR] Turning right")
+
+def go_backward(pwm_left, pwm_right):
+    GPIO.output(MOTOR_LEFT_IN1, GPIO.LOW)
+    GPIO.output(MOTOR_LEFT_IN2, GPIO.HIGH)
+    GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
+    GPIO.output(MOTOR_RIGHT_IN2, GPIO.HIGH)
+    pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
+    pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
+    logger.info("[MOTOR] Go backward")
+
+def stop_car(pwm_left, pwm_right):
+    GPIO.output(MOTOR_LEFT_IN1, GPIO.LOW)
+    GPIO.output(MOTOR_LEFT_IN2, GPIO.LOW)
+    GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
+    GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
+    pwm_left.ChangeDutyCycle(0)
+    pwm_right.ChangeDutyCycle(0)
+    logger.info("[MOTOR] Stopped")
+
+
 
 def setup_camera():
     try:
@@ -147,25 +167,44 @@ pwm_left = None
 pwm_right = None
 camera = None
 
+def get_distance():
+    GPIO.output(TRIG_PIN, True)
+    time.sleep(0.00001)
+    GPIO.output(TRIG_PIN, False)
+
+    start_time = time.time()
+    stop_time = time.time()
+    timeout = start_time + 0.04
+
+    while GPIO.input(ECHO_PIN) == 0:
+        start_time = time.time()
+        if start_time > timeout: return 999
+
+    while GPIO.input(ECHO_PIN) == 1:
+        stop_time = time.time()
+        if stop_time > timeout: return 999
+
+    elapsed = stop_time - start_time
+    distance = (elapsed * 34300) / 2
+    return distance
+
 @app.route('/control', methods=['GET'])
 def control():
     global last_command_time
     cmd = request.args.get('cmd', '').lower()
     last_command_time = time.time()
 
-    if cmd == 'go':
-        go_forward(pwm_left, pwm_right)
-    elif cmd == 'stop':
-        stop_car(pwm_left, pwm_right)
-    elif cmd == 'left':
-        turn_left(pwm_left, pwm_right)
-    elif cmd == 'right':
-        turn_right(pwm_left, pwm_right)
-    else:
-        logger.warning(f"Invalid command received: '{cmd}'")
-        return f"Invalid command: {cmd}", 400
-
+    if cmd == 'go': go_forward(pwm_left, pwm_right)
+    elif cmd == 'backward': go_backward(pwm_left, pwm_right)
+    elif cmd == 'stop': stop_car(pwm_left, pwm_right)
+    elif cmd == 'left': turn_left(pwm_left, pwm_right)
+    elif cmd == 'right': turn_right(pwm_left, pwm_right)
+    else: return "Invalid", 400
     return "OK"
+
+@app.route('/distance')
+def distance_api():
+    return str(round(get_distance(), 2))
 
 @app.route('/snapshot')
 def snapshot():
