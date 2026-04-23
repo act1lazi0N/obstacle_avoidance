@@ -37,17 +37,17 @@ pip install torch torchvision torchaudio requests opencv-python numpy pandas
 
 ## 4. Hướng dẫn vận hành
 **Bước 1: Khởi động Server trên Raspberry Pi**
-1. Mở file ai_controller.py.
-2. Thay đổi biến PI_IP thành địa chỉ IP thực tế của Pi.
-3. Nếu đã cắm cảm biến siêu âm, đặt USE_ULTRASONIC = True.
-4. Chạy bộ điều khiển:
+1. Truy cập vào Pi qua SSH.
+2. Chạy file server:
 ```bash
 python3 robot_server.py
 ```
+3. Lưu ý địa chỉ IP mà Pi đang nhận (Ví dụ: 192.168.82.250).
+
 **Bước 2: Cấu hình và chạy Trí tuệ nhân tạo trên Laptop**
-1. Mở file ai_controller.py.
+1. Mở file `ai_controller.py`.
 2. Thay đổi biến PI_IP thành địa chỉ IP thực tế của Pi.
-3. Nếu đã cắm cảm biến siêu âm, đặt USE_ULTRASONIC = True.
+3. Nếu đã cắm cảm biến siêu âm, đặt `USE_ULTRASONIC = True`.
 4. Chạy bộ điều khiển:
 ```bash
 python ai_controller.py
@@ -60,4 +60,4 @@ python ai_controller.py
 
 ## 6. Lưu ý quan trọng
 * **Mạng Wi-Fi:** Để hệ thống chạy mượt nhất (FPS cao), nên sử dụng Mobile Hotspot từ điện thoại để Laptop và Pi kết nối trực tiếp với nhau.
-* **Độ bão hòa màu:** Nếu sử dụng Camera Pi NoIR (ảnh bị ám tím), có thể chỉnh Saturation về 0.0 trong robot_server.py để chuyển sang chế độ đen trắng giúp AI nhận diện chuẩn hơn.
+* **Độ bão hòa màu:** Nếu sử dụng Camera Pi NoIR (ảnh bị ám tím), có thể chỉnh Saturation về 0.0 trong `robot_server.py` để chuyển sang chế độ đen trắng giúp AI nhận diện chuẩn hơn.
