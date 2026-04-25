@@ -42,7 +42,7 @@ CAR_IP = <Địa chỉ của Raspberrypi>
 
 ## 4. Hướng dẫn vận hành
 **Bước 1: Khởi động Server trên Raspberry Pi**
-1. Truy cập vào Pi qua SSH (`pi3@<tên_địa_chỉ_pi>`).
+1. Truy cập vào Pi qua SSH (`ssh pi3@<tên_địa_chỉ_pi>`).
 2. Kiểm tra file thư mục 
 ```bash
 ls -a 
