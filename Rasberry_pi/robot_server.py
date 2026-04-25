@@ -136,6 +136,10 @@ def setup_camera():
         )
         camera.configure(config)
         camera.start()
+
+        # Black white colour
+        camera.set_controls({"ColourSaturation": 0.0})
+
         time.sleep(2)
         logger.info(f"PiCamera2 ready ({CAMERA_WIDTH}x{CAMERA_HEIGHT})")
         return camera
