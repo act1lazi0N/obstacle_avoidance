@@ -42,12 +42,28 @@ CAR_IP = <Địa chỉ của Raspberrypi>
 
 ## 4. Hướng dẫn vận hành
 **Bước 1: Khởi động Server trên Raspberry Pi**
-1. Truy cập vào Pi qua SSH.
-2. Chạy file server:
+1. Truy cập vào Pi qua SSH (`pi3@<tên_địa_chỉ_pi>`).
+2. Kiểm tra file thư mục 
 ```bash
-python3 robot_server.py
+ls -a 
 ```
-3. Lưu ý địa chỉ IP mà Pi đang nhận (Ví dụ: 192.168.82.250).
+3. Nếu có file `obstacle_avoidance`, truy cập thu mục
+```bash
+cd ./obstacle_avoidance
+```
+4. Xóa file cũ và mở file server:
+```bash
+rm robot_server.py
+nano robot_server.py
+```
+5. Copy/paste lại toàn bộ source code từ file `robot_server.py` vào file editor
+6. Nhấn `Ctrl + O `(Chữ)
+7. Nhấn `Ctrl + X` để thoát
+8. Thực hiện chạy file
+```bash
+python3 robot_server.py 
+```
+9. Lưu ý địa chỉ IP mà Pi đang nhận (Ví dụ: 192.168.82.250).
 
 **Bước 2: Cấu hình và chạy Trí tuệ nhân tạo trên Laptop**
 1. Mở file `ai_controller.py`.
