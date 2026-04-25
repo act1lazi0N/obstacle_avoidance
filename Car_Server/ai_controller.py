@@ -1,9 +1,10 @@
 # Tên file: ai_controller.py
 # Môi trường: Local Server / Cloud (chạy trên máy tính cá nhân hoặc máy chủ)
 # Mô tả: Bộ điều khiển AI sử dụng YOLOv5 kết hợp Sensor Fusion (Siêu âm) để
-#        phát hiện vật cản và điều khiển xe Raspberry Pi qua HTTP API.
+#        phát hiện vật cản và điều khiển xe Raspberry Pi qua HTTP API. Thêm nữa
+#        tích hợp thêm Phanh khẩn cấp động học (AEB - TTC)
 # -----------------------------------------------------------------------
-
+import os
 import time
 import warnings
 import signal
@@ -14,6 +15,7 @@ import torch.hub
 import pathlib
 import logging
 import numpy as np
+from dotenv import load_dotenv
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 log = logging.getLogger('werkzeug')
@@ -22,8 +24,10 @@ log.setLevel(logging.ERROR)
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger(__name__)
 
-PI_IP = "127.0.0.1"
-# PI_IP = "192.168.82.250"
+load_dotenv() #Từ giờ chỉ sửa bên .env
+
+# Nếu trong file .env không có biến CAR_IP, nó sẽ mặc định lấy "127.0.0.1" để test
+PI_IP = os.getenv("CAR_IP", "127.0.0.1")
 SNAPSHOT_URL = f"http://{PI_IP}:5000/snapshot"
 CONTROL_URL = f"http://{PI_IP}:5000/control"
 DISTANCE_URL = f"http://{PI_IP}:5000/distance"
@@ -36,6 +40,8 @@ MAX_CAMERA_FAILURES = 5
 FRAME_CENTER_X = 160
 
 USE_ULTRASONIC = False
+# Ngưỡng phanh khẩn cấp
+TTC_EXPANSION_THRESHOLD = 8000
 
 
 def load_model():
@@ -78,7 +84,7 @@ def check_brightness(frame):
     return True
 
 
-def detect_obstacles(model, frame):
+def detect_obstacles(model, frame, prev_max_area):
     """
     Phân tích hình ảnh để tìm vật cản. Trả về trạng thái nguy hiểm và hướng xử lý.
     """
@@ -89,12 +95,17 @@ def detect_obstacles(model, frame):
     danger = False
     turn_direction = 'right'
     dead_end = False
+    aeb_trigger = False
+    current_max_area = 0
 
     for idx, row in df.iterrows():
         x1, y1, x2, y2 = int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])
         label = row['name']
         conf = row['confidence']
         area = (x2 - x1) * (y2 - y1)
+
+        if area > current_max_area:
+            current_max_area = area
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.putText(frame, f"{label} {conf:.0%}", (x1, y2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
@@ -115,7 +126,11 @@ def detect_obstacles(model, frame):
             danger = True
             break
 
-    return danger, turn_direction, dead_end, frame
+    if current_max_area - prev_max_area > TTC_EXPANSION_THRESHOLD:
+        aeb_trigger = True
+        cv2.putText(frame, "AEB: Emergency brake!", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+
+    return danger, turn_direction, dead_end, aeb_trigger, current_max_area, frame
 
 
 def main():
@@ -123,6 +138,7 @@ def main():
     current_action = "go"
     avoidance_timer = 0
     camera_fail_count = 0
+    prev_max_area = 0
 
     def emergency_stop(sig, frame_signal):
         logger.info("Nhận tín hiệu dừng khẩn cấp!")
@@ -168,7 +184,8 @@ def main():
                 sonic_distance = 999
 
             # Phân tích hình ảnh
-            danger, turn_direction, visual_dead_end, annotated_frame = detect_obstacles(model, frame)
+            danger, turn_direction, visual_dead_end, aeb_trigger, current_max_area, annotated_frame = detect_obstacles(model, frame, prev_max_area)
+            prev_max_area = current_max_area
 
             # Dung hợp kết quả Ngõ cụt (Siêu âm < 10cm HOẶC Ảnh chiếm > 50000 pixels)
             is_dead_end = visual_dead_end or (sonic_distance < 10)
@@ -178,7 +195,12 @@ def main():
 
             # Ra quyết định điều khiển
             if time.time() >= avoidance_timer:
-                if is_dead_end:
+                if aeb_trigger:
+                    logger.warning("AEB KÍCH HOẠT! VẬT CẢN ĐỘNG! Phanh gấp...")
+                    send_command('stop')
+                    avoidance_timer = time.time() + 1.5  # Khóa phanh khẩn cấp trong 1.5s
+                    current_action = "stop"
+                elif is_dead_end:
                     logger.warning("NGÕ CỤT! Đang cài số lùi...")
                     send_command('backward')
                     avoidance_timer = time.time() + 1.0

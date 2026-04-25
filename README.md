@@ -32,7 +32,12 @@ sudo apt install python3-picamera2 python3-flask python3-opencv
 ### Trên Laptop/PC
 Yêu cầu Python 3.8+ và các thư viện:
 ```bash
-pip install torch torchvision torchaudio requests opencv-python numpy pandas
+pip install torch torchvision torchaudio requests opencv-python numpy pandas python-dotenv
+```
+
+Sau khi tải xong tất cả tạo file `.env` và thêm biến môi trường
+```bash
+CAR_IP = <Địa chỉ của Raspberrypi>
 ```
 
 ## 4. Hướng dẫn vận hành

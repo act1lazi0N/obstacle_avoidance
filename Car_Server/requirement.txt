@@ -7,3 +7,4 @@ torch                     # PyTorch - framework chạy model YOLOv5
 torchvision               # Thư viện hỗ trợ cho PyTorch (xử lý ảnh)
 numpy                     # Thư viện tính toán mảng số
 pandas                    # Đọc kết quả detection dạng DataFrame
+python-dotenv             # File môi trường
