@@ -57,7 +57,7 @@ rm robot_server.py
 nano robot_server.py
 ```
 5. Copy/paste lại toàn bộ source code từ file `robot_server.py` vào file editor
-6. Nhấn `Ctrl + O `(Chữ)
+6. Nhấn `Ctrl + O `(Chữ) và `Enter` để lưu
 7. Nhấn `Ctrl + X` để thoát
 8. Thực hiện chạy file
 ```bash
