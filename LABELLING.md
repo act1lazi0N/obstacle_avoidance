@@ -8,7 +8,7 @@
 
 Thay vì tải ảnh trên mạng, chúng ta sẽ dùng chính camera của Raspberry Pi trên xe để chụp ảnh nhằm đảm bảo góc nhìn chân thực nhất cho AI.
 
-1. **Cách sử dụng:** Khởi động xe, chạy file trên Laptop. Cầm đồ vật đưa ra trước camera của xe, xoay nhiều góc độ. Chụp khoảng 150 - 200 ảnh cho mỗi loại đồ vật rồi nhấn `q` để dừng.
+**Cách sử dụng:** Khởi động xe, chạy file `collect_data.py` trên Laptop. Cầm đồ vật đưa ra trước camera của xe, xoay nhiều góc độ. Chụp khoảng 150 - 200 ảnh cho mỗi loại đồ vật rồi nhấn `q` để dừng.
 
 ---
 
