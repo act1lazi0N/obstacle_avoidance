@@ -1,84 +1,174 @@
-# Autonomous Obstacle Avoidance Car (Raspberry Pi + YOLOv5)
+# AutoCar — Xe tự hành tránh vật cản (Raspberry Pi + YOLOv5)
 
-Dự án xe tự hành sử dụng kiến trúc điện toán phân tán (Distributed Computing). Toàn bộ quá trình xử lý AI nặng được thực hiện trên máy tính (Laptop/PC), trong khi Raspberry Pi đóng vai trò là "cánh tay nối dài" để điều khiển phần cứng và thu thập hình ảnh.
+Dự án xe tự hành sử dụng kiến trúc điện toán phân tán. Toàn bộ xử lý AI nặng được thực hiện trên **Laptop/PC** — Raspberry Pi chỉ đóng vai trò điều khiển phần cứng và thu thập hình ảnh.
 
-## 1. Kiến trúc hệ thống
+---
 
-* **Robot Server (Raspberry Pi):** Chạy Flask API để nhận lệnh điều khiển động cơ và truyền stream hình ảnh từ Camera.
-* **AI Controller (Laptop/PC):** Sử dụng mô hình YOLOv5 để nhận diện vật cản từ hình ảnh truyền về, kết hợp dữ liệu siêu âm để ra quyết định và gửi lệnh ngược lại cho xe.
+## Kiến trúc hệ thống
 
-## 2. Sơ đồ đấu nối phần cứng (GPIO BCM)
+```
+┌─────────────────────┐          HTTP/WiFi         ┌──────────────────────────┐
+│  Raspberry Pi (Pi)  │  ◄─────────────────────►   │  Laptop / PC (AI Server) │
+│                     │                             │                          │
+│  • robot_server.py  │   /snapshot → ảnh JPEG      │  • ai_controller.py      │
+│  • PiCamera         │   /control  ← lệnh (cmd)    │  • YOLOv5 + Sensor Fusion│
+│  • Motor L298N      │   /distance → cm siêu âm    │  • Web GUI (port 8080)   │
+│  • Cảm biến HC-SR04 │                             │                          │
+└─────────────────────┘                             └──────────────────────────┘
+```
 
-### Mạch công suất L298N (Motor Driver)
-* **Bánh trái:** ENA => GPIO 25, IN1 => GPIO 24, IN2 => GPIO 23.
-* **Bánh phải:** ENB => GPIO 17, IN3 => GPIO 27, IN4 => GPIO 22.
+---
+
+## Sơ đồ đấu nối phần cứng (GPIO BCM)
+
+### Driver động cơ L298N
+
+| Tên chân | GPIO Pi | Mô tả |
+|---|---|---|
+| ENA (Motor trái) | GPIO 25 | PWM tốc độ |
+| IN1 | GPIO 24 | Chiều quay trái 1 |
+| IN2 | GPIO 23 | Chiều quay trái 2 |
+| ENB (Motor phải) | GPIO 17 | PWM tốc độ |
+| IN3 | GPIO 27 | Chiều quay phải 1 |
+| IN4 | GPIO 22 | Chiều quay phải 2 |
 
 ### Cảm biến siêu âm HC-SR04
-* **TRIG:** GPIO 5.
-* **ECHO:** GPIO 6 (Cần qua cầu phân áp để hạ từ 5V xuống 3.3V trước khi vào Pi).
+
+| Chân | GPIO Pi | Lưu ý |
+|---|---|---|
+| TRIG | GPIO 5 | OUTPUT |
+| ECHO | GPIO 6 | INPUT — cần cầu phân áp 5V → 3.3V |
 
 ### Nguồn điện
-* **Điện áp vào Pi:** Phải điều chỉnh mạch giảm áp (Buck) về mức **5.0V - 5.1V**. Tuyệt đối không để mức 5.5V trở lên để tránh hỏng mạch.
-* **Chung Mass:** Phải nối dây GND từ Pi sang GND của mạch L298N.
 
-## 3. Cài đặt môi trường
+> **⚠️ Quan trọng:** Điều chỉnh mạch giảm áp (Buck Converter) về đúng **5.0V – 5.1V** cho Pi. Tuyệt đối không để vượt quá 5.2V. Nối GND chung giữa Pi và L298N.
+
+---
+
+## Cài đặt môi trường
 
 ### Trên Raspberry Pi
-Cài đặt các thư viện cần thiết:
+
 ```bash
 sudo apt update
-sudo apt install python3-picamera2 python3-flask python3-opencv
-```
-### Trên Laptop/PC
-Yêu cầu Python 3.8+ và các thư viện:
-```bash
-pip install torch torchvision torchaudio requests opencv-python numpy pandas python-dotenv
+sudo apt install -y python3-picamera2 python3-flask python3-opencv
 ```
 
-Sau khi tải xong tất cả tạo file `.env` và thêm biến môi trường
 ```bash
-CAR_IP = <Địa chỉ của Raspberrypi>
+cd ~
+git clone <repo-url> obstacle_avoidance
+cd obstacle_avoidance/Rasberry_pi
+python3 robot_server.py
 ```
 
-## 4. Hướng dẫn vận hành
-**Bước 1: Khởi động Server trên Raspberry Pi**
-1. Truy cập vào Pi qua SSH (`ssh pi3@<tên_địa_chỉ_pi>`).
-2. Kiểm tra file thư mục 
-```bash
-ls -a 
-```
-3. Nếu có file `obstacle_avoidance`, truy cập thu mục
-```bash
-cd ./obstacle_avoidance
-```
-4. Xóa file cũ và mở file server:
-```bash
-rm robot_server.py
-nano robot_server.py
-```
-5. Copy/paste lại toàn bộ source code từ file `robot_server.py` vào file editor
-6. Nhấn `Ctrl + O `(Chữ) và `Enter` để lưu
-7. Nhấn `Ctrl + X` để thoát
-8. Thực hiện chạy file
-```bash
-python3 robot_server.py 
-```
-9. Lưu ý địa chỉ IP mà Pi đang nhận (Ví dụ: 192.168.82.250).
+### Trên Laptop / PC
 
-**Bước 2: Cấu hình và chạy Trí tuệ nhân tạo trên Laptop**
-1. Mở file `ai_controller.py`.
-2. Thay đổi biến PI_IP thành địa chỉ IP thực tế của Pi.
-3. Nếu đã cắm cảm biến siêu âm, đặt `USE_ULTRASONIC = True`.
-4. Chạy bộ điều khiển:
+**1. Cài đặt thư viện:**
+
+```bash
+cd Car_Server
+pip install -r requirement.txt
+```
+
+**2. Tạo file `.env` ở thư mục gốc dự án:**
+
+```env
+CAR_IP=<Địa chỉ IP của Raspberry Pi>
+```
+*(Ví dụ: `CAR_IP=192.168.1.105`)*
+
+**3. Khởi chạy AI Controller:**
+
 ```bash
 python ai_controller.py
 ```
 
-## 5. Các tính năng an toàn
-* **Watchdog Timer:** Nếu xe mất kết nối với Laptop quá 3 giây, nó sẽ tự động dừng lại để tránh va chạm mất kiểm soát.
-* **Phát hiện mù:** Nếu camera bị che khuất hoặc môi trường quá tối, xe sẽ dừng khẩn cấp.
-* **Sensor Fusion:** Kết hợp giữa tầm nhìn máy tính (YOLO) và sóng siêu âm để phát hiện các vật cản trong suốt hoặc quá gần.
+**4. Mở trình duyệt và truy cập Web GUI:**
 
-## 6. Lưu ý quan trọng
-* **Mạng Wi-Fi:** Để hệ thống chạy mượt nhất (FPS cao), nên sử dụng Mobile Hotspot từ điện thoại để Laptop và Pi kết nối trực tiếp với nhau.
-* **Độ bão hòa màu:** Nếu sử dụng Camera Pi NoIR (ảnh bị ám tím), có thể chỉnh Saturation về 0.0 trong `robot_server.py` để chuyển sang chế độ đen trắng giúp AI nhận diện chuẩn hơn.
+```
+http://127.0.0.1:8080
+```
+
+---
+
+## Hướng dẫn vận hành
+
+### Bước 1 — Khởi động Pi
+
+1. SSH vào Pi: `ssh pi@<địa_chỉ_ip_pi>`
+2. Điều hướng vào thư mục dự án và chạy server:
+
+```bash
+cd ~/obstacle_avoidance/Rasberry_pi
+python3 robot_server.py
+```
+
+3. Ghi lại địa chỉ IP của Pi (ví dụ: `192.168.1.105`).
+
+### Bước 2 — Chạy AI trên Laptop
+
+1. Điền IP của Pi vào file `.env`:
+
+```env
+CAR_IP=192.168.1.105
+```
+
+2. Nếu đã cắm cảm biến siêu âm, mở `ai_controller.py` và đặt:
+
+```python
+USE_ULTRASONIC = True
+```
+
+3. Chạy:
+
+```bash
+python ai_controller.py
+```
+
+4. Mở `http://127.0.0.1:8080` trên trình duyệt. Nhấn **START AI** để bắt đầu.
+
+---
+
+## Các tính năng an toàn
+
+| Tính năng | Mô tả |
+|---|---|
+| **Watchdog Timer** | Pi tự dừng motor nếu không nhận lệnh trong 3 giây |
+| **Phát hiện mù camera** | Dừng khẩn cấp khi ảnh quá tối (bị che hoặc trời tối) |
+| **AEB (Phanh khẩn cấp tự động)** | Kích hoạt khi vật cản đột ngột lao nhanh vào camera |
+| **Sensor Fusion** | Kết hợp YOLO + siêu âm để phát hiện vật trong suốt / quá gần |
+| **Phục hồi ngõ cụt** | Xe tự lùi và rẽ thoát khi bị bao vây tứ phía |
+
+---
+
+## Cấu trúc thư mục
+
+```
+AutoCar/
+├── Car_Server/
+│   ├── ai_controller.py     # AI + Web GUI Flask (chạy trên Laptop)
+│   ├── collect_data.py      # Thu thập ảnh để huấn luyện model
+│   ├── requirement.txt      # Thư viện cần cài trên Laptop
+│   ├── models/
+│   │   └── best.pt          # Model YOLOv5 đã huấn luyện
+│   └── templates/
+│       └── index.html       # Giao diện Web GUI
+├── Rasberry_pi/
+│   ├── robot_server.py      # Flask server chạy trên Pi
+│   ├── hardware_test.py     # Kiểm tra phần cứng từng bộ phận
+│   └── requirement.txt      # Thư viện cần cài trên Pi
+├── Stimulation/
+│   └── mock_pi_server.py    # Giả lập Pi để test không cần phần cứng
+├── LABELLING.md             # Hướng dẫn tạo dataset và huấn luyện YOLOv5
+├── TESTFILE.md              # Hướng dẫn chạy thử với môi trường giả lập
+├── .env                     # Biến môi trường (CAR_IP)
+└── README.md
+```
+
+---
+
+## Lưu ý quan trọng
+
+- **Mạng Wi-Fi:** Dùng **Mobile Hotspot** từ điện thoại để Pi và Laptop kết nối trực tiếp, giảm độ trễ tối đa.
+- **Camera NoIR (ảnh ám tím):** Nếu dùng Camera Pi NoIR, có thể chỉnh `Saturation = 0.0` trong `robot_server.py` để chuyển sang ảnh đen trắng giúp AI nhận diện tốt hơn.
+- **Test trước khi thả xe:** Luôn chạy `hardware_test.py` trên Pi để kiểm tra motor, cảm biến và camera trước khi cho xe hoạt động tự động.

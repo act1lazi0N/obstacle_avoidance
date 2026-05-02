@@ -1,50 +1,86 @@
-# Cách tự tạo Dataset và Huấn luyện YOLOv5 (Custom Object Detection)
+# Hướng dẫn tạo Dataset và huấn luyện YOLOv5
 
-Để chiếc xe tự hành có thể nhận diện chính xác các đồ vật cụ thể trong nhà của bạn (như dép, hộp carton, chai nước), bạn cần thực hiện quy trình 3 bước sau: Thu thập hình ảnh -> Gán nhãn -> Huấn luyện mô hình.
-
----
-
-## Bước 1: Thu thập hình ảnh (Data Collection)
-
-Thay vì tải ảnh trên mạng, chúng ta sẽ dùng chính camera của Raspberry Pi trên xe để chụp ảnh nhằm đảm bảo góc nhìn chân thực nhất cho AI.
-
-**Cách sử dụng:** Khởi động xe, chạy file `collect_data.py` trên Laptop. Cầm đồ vật đưa ra trước camera của xe, xoay nhiều góc độ. Chụp khoảng 150 - 200 ảnh cho mỗi loại đồ vật rồi nhấn `q` để dừng.
+Để xe tự hành nhận diện các vật cản cụ thể trong môi trường của bạn (dép, hộp, chai nước, ...), hãy thực hiện quy trình 3 bước: **Thu thập ảnh → Gán nhãn → Huấn luyện**.
 
 ---
 
-## Bước 2: Gán nhãn dữ liệu (Data Labeling)
+## Bước 1 — Thu thập ảnh (`collect_data.py`)
 
-Sử dụng nền tảng [Roboflow](https://roboflow.com/) để vẽ khung nhận diện cho đồ vật.
+Chúng ta sẽ dùng chính camera của Raspberry Pi để chụp ảnh, đảm bảo góc nhìn giống thực tế nhất khi xe đang chạy.
 
-1. **Tạo dự án & Tải ảnh:** * Tạo Project mới (Object Detection).
-   * Kéo thả toàn bộ ảnh trong thư mục `dataset_images` lên Roboflow.
+**Cách thực hiện:**
+
+1. Khởi động Pi và chạy `robot_server.py`.
+2. Trên Laptop, vào thư mục `Car_Server` và chạy:
+
+```bash
+python collect_data.py
+```
+
+3. Đưa đồ vật ra trước camera của xe, xoay nhiều góc, nhiều khoảng cách.
+4. Nhấn **`q`** để dừng khi đã đủ ảnh.
+
+> **💡 Mẹo:** Chụp tối thiểu **150 – 200 ảnh** cho mỗi loại vật cản. Càng nhiều góc độ và điều kiện ánh sáng khác nhau, AI sẽ càng chính xác.
+
+Ảnh được lưu tự động vào thư mục `Car_Server/dataset_images/`.
+
+---
+
+## Bước 2 — Gán nhãn dữ liệu (Roboflow)
+
+Sử dụng nền tảng [Roboflow](https://roboflow.com) để vẽ khung nhận diện (bounding box) cho từng đồ vật.
+
+**Các bước thực hiện:**
+
+1. **Tạo dự án mới:**
+   - Chọn loại **Object Detection**.
+   - Kéo thả toàn bộ ảnh trong `dataset_images/` lên Roboflow.
+
 2. **Gán nhãn (Annotate):**
-   * Dùng chuột vẽ khung hình chữ nhật **ôm sát mép** đồ vật.
-   * Đặt tên (Class name) bằng tiếng Anh viết thường (VD: `box`, `shoe`). 
-   * Nhấn phím `D` để chuyển ảnh và lặp lại cho đến hết.
-3. **Tạo Dataset & Xuất file:**
-   * Nhấn **Generate** (Giữ tỷ lệ mặc định 70/20/10).
-   * Nhấn **Export Dataset** -> Bắt buộc chọn Format là **`YOLOv5 PyTorch`**.
-   * Chọn `Show download code` và copy đoạn code cài đặt mà Roboflow cung cấp.
+   - Vẽ khung hình chữ nhật **ôm sát mép** đồ vật.
+   - Đặt tên class bằng tiếng Anh, viết thường (ví dụ: `box`, `shoe`, `bottle`).
+   - Nhấn phím **`D`** để chuyển sang ảnh tiếp theo.
+
+3. **Xuất dataset:**
+   - Nhấn **Generate** (giữ tỷ lệ mặc định 70 / 20 / 10).
+   - Nhấn **Export Dataset** → chọn format **`YOLOv5 PyTorch`**.
+   - Chọn **Show download code** và copy đoạn lệnh được cung cấp.
 
 ---
 
-## Bước 3: Huấn luyện mô hình (Model Training)
+## Bước 3 — Huấn luyện mô hình (Google Colab)
 
-Sử dụng Google Colab để mượn GPU miễn phí huấn luyện bộ não AI mới.
+Dùng Google Colab để mượn GPU miễn phí.
 
-1. Truy cập [YOLOv5 Colab Notebook](https://colab.research.google.com/github/ultralytics/yolov5/blob/master/tutorial.ipynb).
-2. Vào menu **Runtime** -> **Change runtime type** -> Chọn **T4 GPU**.
-3. Chạy ô code đầu tiên (`Setup`) để cài đặt YOLOv5.
-4. **Nạp dữ liệu:** Tạo một ô code mới, dán đoạn code tải dữ liệu của Roboflow (đã copy ở cuối Bước 2) vào và chạy.
-5. **Huấn luyện:** Tạo một ô code mới và chạy dòng lệnh sau:
-   ```bash
-   !python train.py --img 320 --batch 16 --epochs 100 --data {dataset.location}/data.yaml --weights yolov5s.pt --cache
-   ```
-   *(Mẹo: Bạn có thể tăng `--epochs` lên 150 hoặc 200 nếu số lượng ảnh ít để AI học kỹ hơn).*
-6. **Lấy thành quả:** * Đợi quá trình chạy hoàn tất (khoảng 15-30 phút).
-   * Nhìn sang cột quản lý file bên trái Colab, tìm theo đường dẫn: `yolov5` -> `runs` -> `train` -> `exp` -> `weights`.
-   * Tải file **`best.pt`** về máy tính.
-   * Copy file này đè lên file cũ trong thư mục `models/` của dự án.
+**Các bước thực hiện:**
 
-Hết.
+1. Mở [YOLOv5 Colab Notebook](https://colab.research.google.com/github/ultralytics/yolov5/blob/master/tutorial.ipynb).
+
+2. Đổi runtime: **Runtime → Change runtime type → T4 GPU**.
+
+3. Chạy ô **Setup** để cài đặt YOLOv5.
+
+4. Tạo ô code mới, dán đoạn lệnh tải dataset từ Roboflow vào và chạy.
+
+5. Tạo ô code mới, huấn luyện với lệnh:
+
+```bash
+!python train.py \
+  --img 320 \
+  --batch 16 \
+  --epochs 100 \
+  --data {dataset.location}/data.yaml \
+  --weights yolov5s.pt \
+  --cache
+```
+
+> **💡 Mẹo:** Tăng `--epochs` lên 150 hoặc 200 nếu số ảnh ít (dưới 200 ảnh/class) để AI học kỹ hơn.
+
+6. **Lấy file model sau khi huấn luyện xong:**
+   - Vào thư mục `yolov5/runs/train/exp/weights/` trong Colab.
+   - Tải file **`best.pt`** về máy tính.
+   - Copy file này **đè lên** file cũ tại `Car_Server/models/best.pt`.
+
+---
+
+> Sau khi thay file `best.pt` mới, khởi động lại `ai_controller.py` là xe sẽ nhận diện đúng loại vật cản mới.

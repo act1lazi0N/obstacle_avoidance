@@ -3,6 +3,7 @@ import signal
 import sys
 import threading
 import logging
+import cv2
 
 from flask import Flask, Response, request
 
@@ -36,29 +37,34 @@ logger = logging.getLogger(__name__)
 werkzeug_log = logging.getLogger('werkzeug')
 werkzeug_log.setLevel(logging.ERROR)
 
-MOTOR_LEFT_EN = 25
+# ── GPIO Pinout ────────────────────────────────────────────────
+MOTOR_LEFT_EN  = 25
 MOTOR_LEFT_IN1 = 24
 MOTOR_LEFT_IN2 = 23
-
-MOTOR_RIGHT_EN = 17
+ 
+MOTOR_RIGHT_EN  = 17
 MOTOR_RIGHT_IN1 = 27
 MOTOR_RIGHT_IN2 = 22
-
-DEFAULT_SPEED = 70
+ 
+DEFAULT_SPEED    = 70
 WATCHDOG_TIMEOUT = 3.0
-
-CAMERA_WIDTH = 320
+ 
+CAMERA_WIDTH  = 320
 CAMERA_HEIGHT = 240
-JPEG_QUALITY = 50
-
+JPEG_QUALITY  = 50
+ 
 TRIG_PIN = 5
 ECHO_PIN = 6
+# ──────────────────────────────────────────────────────────────
+# Thread-safety locks to prevent race conditions
+motor_lock = threading.Lock()
+sonic_lock = threading.Lock()
+camera_lock = threading.Lock()
 
 def setup_gpio():
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
-    # Motor
     GPIO.setup(MOTOR_LEFT_EN, GPIO.OUT)
     GPIO.setup(MOTOR_LEFT_IN1, GPIO.OUT)
     GPIO.setup(MOTOR_LEFT_IN2, GPIO.OUT)
@@ -67,10 +73,16 @@ def setup_gpio():
     GPIO.setup(MOTOR_RIGHT_IN1, GPIO.OUT)
     GPIO.setup(MOTOR_RIGHT_IN2, GPIO.OUT)
 
+    # Set initial state: any HIGH pin would cause motors to spin by default
+    GPIO.output(MOTOR_LEFT_IN1,  GPIO.LOW)
+    GPIO.output(MOTOR_LEFT_IN2,  GPIO.LOW)
+    GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
+    GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
+
     pwm_left = GPIO.PWM(MOTOR_LEFT_EN, 1000)
     pwm_right = GPIO.PWM(MOTOR_RIGHT_EN, 1000)
 
-    # Cảm biến siêu âm
+    # Ultrasonic sensor
     GPIO.setup(TRIG_PIN, GPIO.OUT)
     GPIO.setup(ECHO_PIN, GPIO.IN)
     GPIO.output(TRIG_PIN, False)
@@ -81,52 +93,75 @@ def setup_gpio():
     logger.info("GPIO initialized for Motor & Ultrasonic.")
     return pwm_left, pwm_right
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Motor control functions — all wrapped with motor_lock
+#
+# L298N truth table (applies to both channels):
+#   IN1=HIGH, IN2=LOW  -> Forward
+#   IN1=LOW,  IN2=HIGH -> Reverse
+#   IN1=HIGH, IN2=HIGH -> Brake (active stop)
+# ─────────────────────────────────────────────────────────────────────────────
 def go_forward(pwm_left, pwm_right):
-    GPIO.output(MOTOR_LEFT_IN1, GPIO.HIGH)
-    GPIO.output(MOTOR_LEFT_IN2, GPIO.LOW)
-    GPIO.output(MOTOR_RIGHT_IN1, GPIO.HIGH)
-    GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
-    pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
-    pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
+    with motor_lock:
+        GPIO.output(MOTOR_LEFT_IN1,  GPIO.HIGH)
+        GPIO.output(MOTOR_LEFT_IN2,  GPIO.LOW)
+        GPIO.output(MOTOR_RIGHT_IN1, GPIO.HIGH)
+        GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
+        pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
+        pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
     logger.info("[MOTOR] Moving forward")
 
 def turn_left(pwm_left, pwm_right):
-    GPIO.output(MOTOR_LEFT_IN1, GPIO.LOW)
-    GPIO.output(MOTOR_LEFT_IN2, GPIO.HIGH)
-    GPIO.output(MOTOR_RIGHT_IN1, GPIO.HIGH)
-    GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
-    pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
-    pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
+    with motor_lock:
+        GPIO.output(MOTOR_LEFT_IN1,  GPIO.LOW)   # Left wheel: reverse
+        GPIO.output(MOTOR_LEFT_IN2,  GPIO.HIGH)
+        GPIO.output(MOTOR_RIGHT_IN1, GPIO.HIGH)  # Right wheel: forward
+        GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
+        pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
+        pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
     logger.info("[MOTOR] Turning left")
 
 def turn_right(pwm_left, pwm_right):
-    GPIO.output(MOTOR_LEFT_IN1, GPIO.HIGH)
-    GPIO.output(MOTOR_LEFT_IN2, GPIO.LOW)
-    GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
-    GPIO.output(MOTOR_RIGHT_IN2, GPIO.HIGH)
-    pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
-    pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
+    with motor_lock:
+        GPIO.output(MOTOR_LEFT_IN1,  GPIO.HIGH)  # Left wheel: forward
+        GPIO.output(MOTOR_LEFT_IN2,  GPIO.LOW)
+        GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)   # Right wheel: reverse
+        GPIO.output(MOTOR_RIGHT_IN2, GPIO.HIGH)
+        pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
+        pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
     logger.info("[MOTOR] Turning right")
 
 def go_backward(pwm_left, pwm_right):
-    GPIO.output(MOTOR_LEFT_IN1, GPIO.LOW)
-    GPIO.output(MOTOR_LEFT_IN2, GPIO.HIGH)
-    GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
-    GPIO.output(MOTOR_RIGHT_IN2, GPIO.HIGH)
-    pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
-    pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
-    logger.info("[MOTOR] Go backward")
+    with motor_lock:
+        GPIO.output(MOTOR_LEFT_IN1,  GPIO.LOW)
+        GPIO.output(MOTOR_LEFT_IN2,  GPIO.HIGH)
+        GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
+        GPIO.output(MOTOR_RIGHT_IN2, GPIO.HIGH)
+        pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
+        pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
+    logger.info("[MOTOR] Going backward")
 
 def stop_car(pwm_left, pwm_right):
-    GPIO.output(MOTOR_LEFT_IN1, GPIO.LOW)
-    GPIO.output(MOTOR_LEFT_IN2, GPIO.LOW)
-    GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
-    GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
-    pwm_left.ChangeDutyCycle(0)
-    pwm_right.ChangeDutyCycle(0)
-    logger.info("[MOTOR] Stopped")
+    with motor_lock:
+        # Active brake: IN1=IN2=HIGH, max PWM -> immediate stop
+        GPIO.output(MOTOR_LEFT_IN1,  GPIO.HIGH)
+        GPIO.output(MOTOR_LEFT_IN2,  GPIO.HIGH)
+        GPIO.output(MOTOR_RIGHT_IN1, GPIO.HIGH)
+        GPIO.output(MOTOR_RIGHT_IN2, GPIO.HIGH)
+        pwm_left.ChangeDutyCycle(100)
+        pwm_right.ChangeDutyCycle(100)
 
+        # After 50ms disable PWM: car has fully stopped, release motors
+        time.sleep(0.05)
+        pwm_left.ChangeDutyCycle(0)
+        pwm_right.ChangeDutyCycle(0)
 
+        # Return to coast-safe: set IN pins LOW after PWM = 0
+        GPIO.output(MOTOR_LEFT_IN1,  GPIO.LOW)
+        GPIO.output(MOTOR_LEFT_IN2,  GPIO.LOW)
+        GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
+        GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
+    logger.info("[MOTOR] Stopped (active brake)")
 
 def setup_camera():
     try:
@@ -136,12 +171,17 @@ def setup_camera():
         )
         camera.configure(config)
         camera.start()
-
-        # Black white colour
-        camera.set_controls({"ColourSaturation": 0.0})
+        # Set grayscale via ISP (supported on OV5647 Rev 1.3)
+        # Wrapped in try/except for robustness against unsupported cameras
+        try:
+            camera.set_controls({"Saturation": 0.0})
+            logger.info("Saturation control set to 0.0 (grayscale)")
+        except Exception as e:
+            logger.warning(f"Saturation control not available: {e}")
+            logger.warning("Will convert to grayscale via OpenCV instead.")
 
         time.sleep(2)
-        logger.info(f"PiCamera2 ready ({CAMERA_WIDTH}x{CAMERA_HEIGHT})")
+        logger.info(f"PiCamera2 ready ({CAMERA_WIDTH}x{CAMERA_HEIGHT}, grayscale)")
         return camera
     except Exception as e:
         logger.error(f"Failed to initialize camera: {e}")
@@ -172,25 +212,32 @@ pwm_right = None
 camera = None
 
 def get_distance():
-    GPIO.output(TRIG_PIN, True)
-    time.sleep(0.00001)
-    GPIO.output(TRIG_PIN, False)
+    with sonic_lock:
+        GPIO.output(TRIG_PIN, True)
+        time.sleep(0.00001)
+        GPIO.output(TRIG_PIN, False)
 
-    start_time = time.time()
-    stop_time = time.time()
-    timeout = start_time + 0.04
-
-    while GPIO.input(ECHO_PIN) == 0:
         start_time = time.time()
-        if start_time > timeout: return 999
+        stop_time  = time.time()
+        timeout    = start_time + 0.04
 
-    while GPIO.input(ECHO_PIN) == 1:
-        stop_time = time.time()
-        if stop_time > timeout: return 999
+        while GPIO.input(ECHO_PIN) == 0:
+            start_time = time.time()
+            if start_time > timeout:
+                time.sleep(0.06)
+                return 999
 
-    elapsed = stop_time - start_time
-    distance = (elapsed * 34300) / 2
-    return distance
+        while GPIO.input(ECHO_PIN) == 1:
+            stop_time = time.time()
+            if stop_time > timeout:
+                time.sleep(0.06)
+                return 999
+
+        elapsed  = stop_time - start_time
+        distance = (elapsed * 34300) / 2
+        time.sleep(0.06)
+
+    return round(distance, 2)
 
 @app.route('/control', methods=['GET'])
 def control():
@@ -198,12 +245,18 @@ def control():
     cmd = request.args.get('cmd', '').lower()
     last_command_time = time.time()
 
-    if cmd == 'go': go_forward(pwm_left, pwm_right)
-    elif cmd == 'backward': go_backward(pwm_left, pwm_right)
-    elif cmd == 'stop': stop_car(pwm_left, pwm_right)
-    elif cmd == 'left': turn_left(pwm_left, pwm_right)
-    elif cmd == 'right': turn_right(pwm_left, pwm_right)
-    else: return "Invalid", 400
+    if cmd == 'go':
+        go_forward(pwm_left, pwm_right)
+    elif cmd == 'backward':
+        go_backward(pwm_left, pwm_right)
+    elif cmd == 'stop':
+        stop_car(pwm_left, pwm_right)
+    elif cmd == 'left':
+        turn_left(pwm_left, pwm_right)
+    elif cmd == 'right':
+        turn_right(pwm_left, pwm_right)
+    else:
+        return "Invalid", 400
     return "OK"
 
 @app.route('/distance')
@@ -213,34 +266,33 @@ def distance_api():
 @app.route('/snapshot')
 def snapshot():
     try:
-        import cv2
-        frame = camera.capture_array()
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        ret, buffer = cv2.imencode(
-            '.jpg', frame_bgr,
-            [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
-        )
+        with camera_lock:
+            frame = camera.capture_array()
+        # Convert to grayscale then back to BGR for consistent output
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        frame_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        ret, buffer = cv2.imencode('.jpg', frame_bgr,
+                                   [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         if ret:
             return Response(buffer.tobytes(), mimetype='image/jpeg')
-        else:
-            logger.error("Failed to encode JPEG image.")
-            return "Image encoding error", 500
+        logger.error("Failed to encode JPEG image.")
+        return "Image encoding error", 500
     except Exception as e:
-        logger.error(f"Error capturing image: {e}")
+        logger.error(f"Error capturing snapshot: {e}")
         return f"Camera error: {e}", 500
 
 @app.route('/video_feed')
 def video_feed():
     def generate_frames():
-        import cv2
         while True:
             try:
-                frame = camera.capture_array()
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                ret, buffer = cv2.imencode(
-                    '.jpg', frame_bgr,
-                    [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
-                )
+                with camera_lock:
+                    frame = camera.capture_array()
+                # Convert to grayscale then back to BGR for consistent output
+                gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+                frame_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                ret, buffer = cv2.imencode('.jpg', frame_bgr,
+                                           [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                 if ret:
                     yield (
                         b'--frame\r\n'
@@ -251,11 +303,9 @@ def video_feed():
             except Exception as e:
                 logger.error(f"Error in video stream: {e}")
                 break
-
-    return Response(
-        generate_frames(),
-        mimetype='multipart/x-mixed-replace; boundary=frame'
-    )
+ 
+    return Response(generate_frames(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/')
 def index():
@@ -271,7 +321,7 @@ def index():
 
 def cleanup(sig=None, frame=None):
     logger.info("Cleaning up resources...")
-    if pwm_left and pwm_right:
+    if pwm_left is not None and pwm_right is not None:
         stop_car(pwm_left, pwm_right)
     if camera:
         try:
