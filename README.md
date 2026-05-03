@@ -55,9 +55,15 @@ sudo apt install -y python3-picamera2 python3-flask python3-opencv
 ```
 
 ```bash
-cd ~
-git clone <repo-url> obstacle_avoidance
-cd obstacle_avoidance/Rasberry_pi
+cd obstacle_avoidance
+```
+Nếu `robot_server.py` có tồn tại
+```bash
+rm robot_server.py
+nano robot_server.py
+```
+Nhớ khi copy/paste mã mới xong thì `Ctrl + O` -> `Enter` và `Ctrl + X` để thoát. Sau đó chạy file đó
+```bash
 python3 robot_server.py
 ```
 
