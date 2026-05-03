@@ -3,6 +3,8 @@ import signal
 import sys
 import threading
 import logging
+import subprocess
+import os
 import cv2
 
 from flask import Flask, Response, request
@@ -163,29 +165,88 @@ def stop_car(pwm_left, pwm_right):
         GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
     logger.info("[MOTOR] Stopped (active brake)")
 
-def setup_camera():
-    try:
-        camera = Picamera2()
-        config = camera.create_preview_configuration(
-            main={"size": (CAMERA_WIDTH, CAMERA_HEIGHT), "format": "RGB888"}
-        )
-        camera.configure(config)
-        camera.start()
-        # Set grayscale via ISP (supported on OV5647 Rev 1.3)
-        # Wrapped in try/except for robustness against unsupported cameras
-        try:
-            camera.set_controls({"Saturation": 0.0})
-            logger.info("Saturation control set to 0.0 (grayscale)")
-        except Exception as e:
-            logger.warning(f"Saturation control not available: {e}")
-            logger.warning("Will convert to grayscale via OpenCV instead.")
+def release_camera_pipeline():
+    """
+    Kill any stale processes holding the libcamera pipeline.
+    This is necessary when a previous robot_server was killed abruptly
+    (Ctrl+Z, kill -9, power loss) and didn't call cleanup().
+    Skips the current process so we don't kill ourselves.
+    """
+    my_pid = os.getpid()
+    targets = ['libcamera', 'picamera2', 'robot_server']
+    killed = []
 
-        time.sleep(2)
-        logger.info(f"PiCamera2 ready ({CAMERA_WIDTH}x{CAMERA_HEIGHT}, grayscale)")
-        return camera
+    try:
+        # List all processes, filter for camera-related ones
+        result = subprocess.run(
+            ['ps', 'aux'], capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.splitlines():
+            # Skip header line
+            if 'PID' in line and 'COMMAND' in line:
+                continue
+            # Check if any target keyword matches
+            if any(t in line for t in targets):
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        pid = int(parts[1])
+                        if pid != my_pid:
+                            os.kill(pid, signal.SIGKILL)
+                            killed.append(pid)
+                    except (ValueError, ProcessLookupError, PermissionError):
+                        pass
     except Exception as e:
-        logger.error(f"Failed to initialize camera: {e}")
-        raise
+        logger.warning(f"Could not scan for stale processes: {e}")
+
+    if killed:
+        logger.info(f"Killed stale camera processes: {killed}")
+        time.sleep(2)  # Wait for kernel to release /dev/video*
+    else:
+        logger.info("No stale camera processes found.")
+
+
+def setup_camera(max_retries=3, retry_delay=3.0):
+    """
+    Initialize PiCamera2 with automatic pipeline release and retry.
+    Steps:
+        1. Kill any stale processes holding the camera
+        2. Attempt to init (up to max_retries times)
+    """
+    release_camera_pipeline()
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"Camera init attempt {attempt}/{max_retries}...")
+            camera = Picamera2()
+            config = camera.create_preview_configuration(
+                main={"size": (CAMERA_WIDTH, CAMERA_HEIGHT), "format": "RGB888"}
+            )
+            camera.configure(config)
+            camera.start()
+            try:
+                camera.set_controls({"Saturation": 0.0})
+                logger.info("Saturation set to 0.0 (grayscale)")
+            except Exception as e:
+                logger.warning(f"Saturation control not available: {e}")
+                logger.warning("Will convert to grayscale via OpenCV instead.")
+
+            time.sleep(2)
+            logger.info(f"PiCamera2 ready ({CAMERA_WIDTH}x{CAMERA_HEIGHT}, grayscale)")
+            return camera
+
+        except Exception as e:
+            logger.error(f"Camera init failed (attempt {attempt}): {e}")
+            try:
+                camera.close()
+            except Exception:
+                pass
+            if attempt < max_retries:
+                logger.info(f"Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+            else:
+                logger.critical("All camera init attempts failed. Exiting.")
+                raise
 
 last_command_time = time.time()
 
@@ -322,15 +383,22 @@ def index():
 def cleanup(sig=None, frame=None):
     logger.info("Cleaning up resources...")
     if pwm_left is not None and pwm_right is not None:
-        stop_car(pwm_left, pwm_right)
-    if camera:
+        try:
+            stop_car(pwm_left, pwm_right)
+        except Exception:
+            pass
+    if camera is not None:
         try:
             camera.stop()
-            logger.info("Camera stopped.")
+            camera.close()
+            logger.info("Camera stopped and closed.")
         except Exception as e:
             logger.warning(f"Error stopping camera: {e}")
-    GPIO.cleanup()
-    logger.info("GPIO cleaned up. Exiting program.")
+    try:
+        GPIO.cleanup()
+        logger.info("GPIO cleaned up. Exiting program.")
+    except Exception:
+        pass
     sys.exit(0)
 
 def main():
@@ -339,29 +407,36 @@ def main():
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
+    # Init GPIO first (always safe)
     try:
         pwm_left, pwm_right = setup_gpio()
-        camera = setup_camera()
-
-        wd_thread = threading.Thread(
-            target=watchdog_thread,
-            args=(pwm_left, pwm_right),
-            daemon=True
-        )
-        wd_thread.start()
-        logger.info(f"Watchdog enabled (timeout: {WATCHDOG_TIMEOUT}s)")
-
-        logger.info("=" * 50)
-        logger.info("ROBOT SERVER RUNNING")
-        logger.info("Waiting for commands from AI Server...")
-        logger.info("Press Ctrl+C to stop")
-        logger.info("=" * 50)
-
-        app.run(host='0.0.0.0', port=5000, threaded=True)
-
     except Exception as e:
-        logger.critical(f"Initialization error: {e}")
+        logger.critical(f"GPIO initialization error: {e}")
+        GPIO.cleanup()
+        sys.exit(1)
+
+    # Init camera (with retry for post-pkill pipeline release)
+    try:
+        camera = setup_camera()
+    except Exception as e:
+        logger.critical(f"Camera initialization failed after all retries: {e}")
         cleanup()
+
+    wd_thread = threading.Thread(
+        target=watchdog_thread,
+        args=(pwm_left, pwm_right),
+        daemon=True
+    )
+    wd_thread.start()
+    logger.info(f"Watchdog enabled (timeout: {WATCHDOG_TIMEOUT}s)")
+
+    logger.info("=" * 50)
+    logger.info("ROBOT SERVER RUNNING")
+    logger.info("Waiting for commands from AI Server...")
+    logger.info("Press Ctrl+C to stop")
+    logger.info("=" * 50)
+
+    app.run(host='0.0.0.0', port=5000, threaded=True)
 
 if __name__ == '__main__':
     main()
