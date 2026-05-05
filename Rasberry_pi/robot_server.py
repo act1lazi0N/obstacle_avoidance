@@ -48,7 +48,7 @@ MOTOR_RIGHT_EN  = 17
 MOTOR_RIGHT_IN1 = 27
 MOTOR_RIGHT_IN2 = 22
  
-DEFAULT_SPEED    = 70
+DEFAULT_SPEED    = 80
 WATCHDOG_TIMEOUT = 3.0
  
 CAMERA_WIDTH  = 320
@@ -62,6 +62,7 @@ ECHO_PIN = 6
 motor_lock = threading.Lock()
 sonic_lock = threading.Lock()
 camera_lock = threading.Lock()
+_cmd_lock = threading.Lock()
 
 def setup_gpio():
     GPIO.setmode(GPIO.BCM)
@@ -154,7 +155,8 @@ def stop_car(pwm_left, pwm_right):
         pwm_right.ChangeDutyCycle(100)
 
         # After 50ms disable PWM: car has fully stopped, release motors
-        time.sleep(0.05)
+    time.sleep(0.05)
+    with motor_lock:
         pwm_left.ChangeDutyCycle(0)
         pwm_right.ChangeDutyCycle(0)
 
@@ -173,7 +175,7 @@ def release_camera_pipeline():
     Skips the current process so we don't kill ourselves.
     """
     my_pid = os.getpid()
-    targets = ['libcamera', 'picamera2', 'robot_server']
+    targets = ['libcamera-vid', 'libcamera-still', 'rpicam']
     killed = []
 
     try:
@@ -248,7 +250,10 @@ def setup_camera(max_retries=3, retry_delay=3.0):
                 logger.critical("All camera init attempts failed. Exiting.")
                 raise
 
-last_command_time = time.time()
+def update_last_command_time():
+    global last_command_time
+    with _cmd_lock:
+        last_command_time = time.time()
 
 def watchdog_thread(pwm_left, pwm_right):
     global last_command_time
@@ -346,6 +351,7 @@ def snapshot():
 def video_feed():
     def generate_frames():
         while True:
+            time.sleep(0.033)
             try:
                 with camera_lock:
                     frame = camera.capture_array()
@@ -383,10 +389,7 @@ def index():
 def cleanup(sig=None, frame=None):
     logger.info("Cleaning up resources...")
     if pwm_left is not None and pwm_right is not None:
-        try:
-            stop_car(pwm_left, pwm_right)
-        except Exception:
-            pass
+        stop_car(pwm_left, pwm_right)
     if camera is not None:
         try:
             camera.stop()

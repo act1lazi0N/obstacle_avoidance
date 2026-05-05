@@ -42,9 +42,8 @@ DEAD_END_AREA_THRESHOLD = 25000
 BRIGHTNESS_THRESHOLD = 15
 MAX_CAMERA_FAILURES = 5
 
-USE_ULTRASONIC = False
+USE_ULTRASONIC = True
 TTC_EXPANSION_THRESHOLD = 8000
-
 
 # === FLASK APP SETUP ===
 app = Flask(__name__)
@@ -65,9 +64,11 @@ ai_state = {
 latest_frame = None
 frame_lock = threading.Lock()
 
+
 def update_log(msg):
     logger.info(msg)
     ai_state["latest_log"] = msg
+
 
 def load_model():
     update_log("Loading YOLOv5 model from models/best.pt...")
@@ -182,7 +183,7 @@ def detect_obstacles(model, frame, prev_max_area):
 
 def ai_worker():
     global latest_frame
-    
+
     # Try to load model — if it fails, run in passthrough mode (camera only, no AI)
     model = None
     try:
@@ -190,7 +191,7 @@ def ai_worker():
     except Exception as e:
         update_log(f"Model load failed: {e}")
         update_log("Running in PASSTHROUGH mode (camera only, no AI detection)")
-    
+
     current_action = "stop"
     avoidance_timer = 0
     camera_fail_count = 0
@@ -227,7 +228,7 @@ def ai_worker():
                     current_action = "stop"
                     ai_state["current_action"] = current_action
                 prev_max_area = 0
-                cv2.putText(frame, "CAMERA BLIND", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+                cv2.putText(frame, "CAMERA BLIND", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 with frame_lock:
                     latest_frame = frame
                 time.sleep(0.1)
@@ -255,7 +256,8 @@ def ai_worker():
 
             # === NORMAL MODE (model loaded) ===
             # Analyze image
-            danger, turn_direction, visual_dead_end, aeb_trigger, current_max_area, annotated_frame = detect_obstacles(model, frame, prev_max_area)
+            danger, turn_direction, visual_dead_end, aeb_trigger, current_max_area, annotated_frame = detect_obstacles(
+                model, frame, prev_max_area)
             prev_max_area = current_max_area
 
             # Fuse results
@@ -297,10 +299,13 @@ def ai_worker():
                     avoidance_timer = time.time() + 1.5
                     current_action = "stop (AEB)"
 
+
                 elif is_dead_end:
                     update_log("DEAD END! Reversing...")
                     send_command('stop')
-                    avoidance_timer = time.time() + 1.0
+                    time.sleep(0.3)
+                    send_command('backward')
+                    avoidance_timer = time.time() + 1.2
                     current_action = "backward"
                     needs_escape_turn = True
 
@@ -315,7 +320,7 @@ def ai_worker():
                         update_log("Clear path - Going straight")
                         send_command("go")
                         current_action = "go"
-            
+
             ai_state["current_action"] = current_action
 
         except Exception as e:
@@ -329,6 +334,7 @@ def ai_worker():
 def index():
     return render_template('index.html', pi_ip=PI_IP, snapshot_url=SNAPSHOT_URL)
 
+
 def generate_video():
     while True:
         with frame_lock:
@@ -338,15 +344,18 @@ def generate_video():
                     frame_bytes = buffer.tobytes()
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-        time.sleep(0.05) # ~20 fps
+        time.sleep(0.05)  # ~20 fps
+
 
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_video(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+
 @app.route('/api/status')
 def get_status():
     return jsonify(ai_state)
+
 
 @app.route('/api/toggle_ai', methods=['POST'])
 def toggle_ai():
@@ -357,6 +366,7 @@ def toggle_ai():
         update_log(f"User {action} the AI Controller.")
         return jsonify({"status": "success", "is_running": ai_state['is_running']})
     return jsonify({"status": "error"}), 400
+
 
 @app.route('/api/emergency_stop', methods=['POST'])
 def emergency_stop():
@@ -371,6 +381,8 @@ if __name__ == '__main__':
         logger.info("Received exit signal!")
         send_command('stop')
         sys.exit(0)
+
+
     signal.signal(signal.SIGINT, signal_handler)
 
     # Start AI Thread
@@ -378,8 +390,8 @@ if __name__ == '__main__':
     t.start()
 
     # Start Flask Web Server
-    logger.info("="*50)
+    logger.info("=" * 50)
     logger.info("WEB GUI IS RUNNING")
     logger.info("Open http://127.0.0.1:8080 in your browser")
-    logger.info("="*50)
+    logger.info("=" * 50)
     app.run(host='0.0.0.0', port=8080, threaded=True, use_reloader=False)
