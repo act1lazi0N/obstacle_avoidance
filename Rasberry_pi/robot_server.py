@@ -1,32 +1,29 @@
-# =========================================================
-# File: ai_controller.py
-# =========================================================
-
-import os
 import time
-import warnings
 import signal
 import sys
-import cv2
-import requests
-import torch.hub
-import pathlib
-import logging
-import numpy as np
 import threading
+import logging
+import subprocess
+import os
+import cv2
 
-from dotenv import load_dotenv
-from flask import Flask, render_template, Response, jsonify, request
-from flask_cors import CORS
+from flask import Flask, Response, request
+last_motor_state = ""
+try:
+    import RPi.GPIO as GPIO
+except ImportError:
+    print("RPi.GPIO not found!")
+    sys.exit(1)
+
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    print("picamera2 not found!")
+    sys.exit(1)
 
 # =========================================================
-# WARNINGS / LOGGING
+# LOGGING
 # =========================================================
-
-warnings.filterwarnings("ignore", category=FutureWarning)
-
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,953 +33,652 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+werkzeug_log = logging.getLogger('werkzeug')
+werkzeug_log.setLevel(logging.ERROR)
+
 # =========================================================
-# ENV
+# GPIO PINOUT
 # =========================================================
 
-load_dotenv()
+# LEFT MOTOR
+MOTOR_LEFT_EN  = 25
+MOTOR_LEFT_IN1 = 24
+MOTOR_LEFT_IN2 = 23
 
-PI_IP = os.getenv("CAR_IP", "127.0.0.1")
+# RIGHT MOTOR
+MOTOR_RIGHT_EN  = 17
+MOTOR_RIGHT_IN1 = 27
+MOTOR_RIGHT_IN2 = 22
 
-SNAPSHOT_URL = f"http://{PI_IP}:5000/snapshot"
-CONTROL_URL = f"http://{PI_IP}:5000/control"
+# LED
+LED_LEFT  = 26
+LED_RIGHT = 20
+LED_BACK  = 21
 
-DISTANCE_URL = f"http://{PI_IP}:5000/distance"
-REAR_DISTANCE_URL = f"http://{PI_IP}:5000/rear_distance"
+# ULTRASONIC
+#Cam bien truoc
+TRIG_PIN = 5
+ECHO_PIN = 6
 
+#Cam bien sau
+REAR_TRIG_PIN = 18
+REAR_ECHO_PIN = 12
 # =========================================================
 # CONFIG
 # =========================================================
 
-TURN_DURATION = 0.8
-POST_DEADEND_TURN_DURATION = 1.0
+DEFAULT_SPEED = 70
+BACKWARD_SPEED = 55
+TURN_SPEED = 65
 
-DANGER_AREA_THRESHOLD = 5000
-DEAD_END_AREA_THRESHOLD = 25000
+WATCHDOG_TIMEOUT = 3.0
 
-BRIGHTNESS_THRESHOLD = 15
-
-MAX_CAMERA_FAILURES = 5
-
-FRONT_STOP_DISTANCE = 18
-FRONT_DANGER_DISTANCE = 30
-
-REAR_STOP_DISTANCE = 15
-
-COMMAND_INTERVAL = 0.25
-
-ESCAPE_BACKWARD_TIME = 1.0
-ESCAPE_TURN_TIME = 1.2
-
-USE_ULTRASONIC = True
-
-TTC_EXPANSION_THRESHOLD = 8000
+CAMERA_WIDTH = 320
+CAMERA_HEIGHT = 240
+JPEG_QUALITY = 50
 
 # =========================================================
-# FLASK
+# GLOBALS
 # =========================================================
+
+motor_lock = threading.Lock()
+camera_lock = threading.Lock()
+sonic_lock = threading.Lock()
+cmd_lock = threading.Lock()
+
+last_command_time = time.time()
+
+pwm_left = None
+pwm_right = None
+camera = None
 
 app = Flask(__name__)
-CORS(app)
 
 # =========================================================
-# GLOBAL STATE
+# GPIO SETUP
 # =========================================================
 
-ai_state = {
-    "is_running": False,
-    "current_action": "stop",
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
 
-    "front_distance": 999.0,
-    "rear_distance": 999.0,
+    pins = [
+        MOTOR_LEFT_EN,
+        MOTOR_LEFT_IN1,
+        MOTOR_LEFT_IN2,
+        MOTOR_RIGHT_EN,
+        MOTOR_RIGHT_IN1,
+        MOTOR_RIGHT_IN2,
+        LED_LEFT,
+        LED_RIGHT,
+        LED_BACK,
+        TRIG_PIN
+    ]
 
-    "danger": False,
-    "dead_end": False,
-    "aeb_triggered": False,
+    for pin in pins:
+        GPIO.setup(pin, GPIO.OUT)
 
-    "camera_ok": False,
+    GPIO.setup(ECHO_PIN, GPIO.IN)
 
-    "latest_log": "System initialized"
-}
+    GPIO.setup(REAR_TRIG_PIN, GPIO.OUT)
+    GPIO.setup(REAR_ECHO_PIN, GPIO.IN)
 
-latest_frame = None
+    GPIO.output(REAR_TRIG_PIN, GPIO.LOW)
 
-frame_lock = threading.Lock()
+    # Initial LOW
+    for pin in pins:
+        GPIO.output(pin, GPIO.LOW)
 
-last_command = None
-last_command_time = 0
+    pwm_l = GPIO.PWM(MOTOR_LEFT_EN, 1000)
+    pwm_r = GPIO.PWM(MOTOR_RIGHT_EN, 1000)
 
-# =========================================================
-# LOG HELPER
-# =========================================================
+    pwm_l.start(0)
+    pwm_r.start(0)
 
-def update_log(msg):
+    logger.info("GPIO initialized")
 
-    logger.info(msg)
-
-    ai_state["latest_log"] = msg
-
-# =========================================================
-# YOLO MODEL
-# =========================================================
-
-def load_model():
-
-    update_log("Loading YOLOv5 model...")
-
-    temp = pathlib.PosixPath
-
-    try:
-
-        pathlib.PosixPath = pathlib.WindowsPath
-
-        # LOCAL YOLOv5 RECOMMENDED
-        model = torch.hub.load(
-            './yolov5',
-            'custom',
-            path='models/best.pt',
-            source='local'
-        )
-
-        model.conf = 0.45
-
-    finally:
-
-        pathlib.PosixPath = temp
-
-    update_log("Model loaded successfully!")
-
-    return model
+    return pwm_l, pwm_r
 
 # =========================================================
-# SEND COMMAND
+# LED CONTROL
 # =========================================================
 
-def send_command(cmd, force=False):
+def reset_leds():
+    GPIO.output(LED_LEFT, GPIO.LOW)
+    GPIO.output(LED_RIGHT, GPIO.LOW)
+    GPIO.output(LED_BACK, GPIO.LOW)
 
-    global last_command
+# =========================================================
+# MOTOR CONTROL
+# =========================================================
+
+def set_motor(
+    left_in1,
+    left_in2,
+    right_in1,
+    right_in2,
+    left_speed,
+    right_speed
+):
+    with motor_lock:
+
+        GPIO.output(MOTOR_LEFT_IN1, left_in1)
+        GPIO.output(MOTOR_LEFT_IN2, left_in2)
+
+        GPIO.output(MOTOR_RIGHT_IN1, right_in1)
+        GPIO.output(MOTOR_RIGHT_IN2, right_in2)
+
+        pwm_left.ChangeDutyCycle(left_speed)
+        pwm_right.ChangeDutyCycle(right_speed)
+
+def go_forward():
+    reset_leds()
+
+    set_motor(
+        GPIO.HIGH, GPIO.LOW,
+        GPIO.HIGH, GPIO.LOW,
+        BACKWARD_SPEED,
+        BACKWARD_SPEED
+    )
+
+    global last_motor_state
+
+    if last_motor_state != "FORWARD":
+        logger.info("[MOTOR] FORWARD")
+
+    last_motor_state = "FORWARD"
+
+def go_backward():
+    reset_leds()
+
+    GPIO.output(LED_BACK, GPIO.HIGH)
+
+    set_motor(
+        GPIO.LOW, GPIO.HIGH,
+        GPIO.LOW, GPIO.HIGH,
+        DEFAULT_SPEED,
+        DEFAULT_SPEED
+    )
+
+    global last_motor_state
+
+    if last_motor_state != "BACKWARD":
+        logger.info("[MOTOR] BACKWARD")
+
+    last_motor_state = "BACKWARD"
+
+def turn_left():
+    reset_leds()
+
+    GPIO.output(LED_LEFT, GPIO.HIGH)
+
+    set_motor(
+        GPIO.LOW, GPIO.HIGH,
+        GPIO.HIGH, GPIO.LOW,
+        TURN_SPEED,
+        TURN_SPEED
+    )
+
+    global last_motor_state
+
+    if last_motor_state != "LEFT":
+        logger.info("[MOTOR] LEFT")
+
+    last_motor_state = "LEFT"
+
+def turn_right():
+    reset_leds()
+
+    GPIO.output(LED_RIGHT, GPIO.HIGH)
+
+    set_motor(
+        GPIO.HIGH, GPIO.LOW,
+        GPIO.LOW, GPIO.HIGH,
+        TURN_SPEED,
+        TURN_SPEED
+    )
+
+    global last_motor_state
+
+    if last_motor_state != "RIGHT":
+        logger.info("[MOTOR] RIGHT")
+
+    last_motor_state = "RIGHT"
+
+def stop_car():
+
+    reset_leds()
+
+    with motor_lock:
+
+        # Active brake
+        GPIO.output(MOTOR_LEFT_IN1, GPIO.HIGH)
+        GPIO.output(MOTOR_LEFT_IN2, GPIO.HIGH)
+
+        GPIO.output(MOTOR_RIGHT_IN1, GPIO.HIGH)
+        GPIO.output(MOTOR_RIGHT_IN2, GPIO.HIGH)
+
+        pwm_left.ChangeDutyCycle(100)
+        pwm_right.ChangeDutyCycle(100)
+
+        time.sleep(0.05)
+
+        pwm_left.ChangeDutyCycle(0)
+        pwm_right.ChangeDutyCycle(0)
+
+        GPIO.output(MOTOR_LEFT_IN1, GPIO.LOW)
+        GPIO.output(MOTOR_LEFT_IN2, GPIO.LOW)
+
+        GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
+        GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
+
+    global last_motor_state
+
+    if last_motor_state != "STOP":
+        logger.info("[MOTOR] STOP")
+
+    last_motor_state = "STOP"
+
+# =========================================================
+# COMMAND TIMER
+# =========================================================
+
+def update_last_command_time():
     global last_command_time
 
-    now = time.time()
+    with cmd_lock:
+        last_command_time = time.time()
 
-    # Prevent command spam
-    if (
-        not force
-        and cmd == last_command
-        and (now - last_command_time) < COMMAND_INTERVAL
-    ):
-        return True
+# =========================================================
+# WATCHDOG
+# =========================================================
 
-    try:
+def watchdog_thread():
 
-        resp = requests.get(
-            CONTROL_URL,
-            params={'cmd': cmd},
-            timeout=0.5
-        )
+    global last_command_time
+    global last_motor_state
 
-        if resp.status_code == 200:
+    watchdog_triggered = False
 
-            last_command = cmd
-            last_command_time = now
+    while True:
 
-            return True
+        with cmd_lock:
+            elapsed = time.time() - last_command_time
 
-        logger.warning(
-            f"Command rejected: {cmd} ({resp.status_code})"
-        )
+        # Timeout detected
+        if elapsed > WATCHDOG_TIMEOUT:
 
-        return False
+            # Only stop ONCE
+            if not watchdog_triggered:
 
-    except requests.exceptions.ConnectionError:
+                if last_motor_state != "STOP":
 
-        logger.error(
-            f"Lost connection while sending '{cmd}'"
-        )
+                    logger.warning(
+                        f"[WATCHDOG] Timeout {WATCHDOG_TIMEOUT}s -> STOP"
+                    )
 
-        return False
+                    stop_car()
 
-    except Exception as e:
+                watchdog_triggered = True
 
-        logger.error(f"Command '{cmd}' failed: {e}")
+        else:
+            watchdog_triggered = False
 
-        return False
+        time.sleep(0.2)
+
+# =========================================================
+# ULTRASONIC
+# =========================================================
+#doc khoang cach truoc
+def get_distance():
+
+    with sonic_lock:
+
+        GPIO.output(TRIG_PIN, False)
+        time.sleep(0.0002)
+
+        GPIO.output(TRIG_PIN, True)
+        time.sleep(0.00001)
+        GPIO.output(TRIG_PIN, False)
+
+        pulse_start = time.time()
+        timeout = pulse_start + 0.03
+
+        while GPIO.input(ECHO_PIN) == 0:
+
+            pulse_start = time.time()
+
+            if pulse_start > timeout:
+                return 999
+
+        pulse_end = time.time()
+
+        while GPIO.input(ECHO_PIN) == 1:
+
+            pulse_end = time.time()
+
+            if pulse_end > timeout:
+                return 999
+
+        duration = pulse_end - pulse_start
+
+        distance = duration * 17150
+
+        if distance <= 0 or distance > 400:
+            return 999
+
+        return round(distance, 2)
+#doc khoang cach sau
+def get_rear_distance():
+    with sonic_lock:
+
+        GPIO.output(TRIG_PIN, False)
+        time.sleep(0.0002)
+
+        GPIO.output(TRIG_PIN, True)
+        time.sleep(0.00001)
+        GPIO.output(TRIG_PIN, False)
+
+        pulse_start = time.time()
+        timeout = pulse_start + 0.03
+
+        while GPIO.input(ECHO_PIN) == 0:
+
+            pulse_start = time.time()
+
+            if pulse_start > timeout:
+                return 999
+
+        pulse_end = time.time()
+
+        while GPIO.input(ECHO_PIN) == 1:
+
+            pulse_end = time.time()
+
+            if pulse_end > timeout:
+                return 999
+
+        duration = pulse_end - pulse_start
+
+        distance = duration * 17150
+
+        if distance <= 0 or distance > 400:
+            return 999
+
+        return round(distance, 2)
 
 # =========================================================
 # CAMERA
 # =========================================================
 
-def capture_frame():
+def release_camera_pipeline():
+
+    targets = ['libcamera', 'rpicam']
 
     try:
-
-        resp = requests.get(
-            SNAPSHOT_URL,
-            timeout=1
+        result = subprocess.run(
+            ['ps', 'aux'],
+            capture_output=True,
+            text=True
         )
 
-        img_arr = np.array(
-            bytearray(resp.content),
-            dtype=np.uint8
-        )
+        for line in result.stdout.splitlines():
 
-        frame = cv2.imdecode(
-            img_arr,
-            cv2.IMREAD_COLOR
-        )
+            if any(t in line for t in targets):
 
-        return frame
+                parts = line.split()
 
-    except:
+                if len(parts) > 1:
+                    try:
+                        pid = int(parts[1])
 
-        return None
+                        if pid != os.getpid():
+                            os.kill(pid, signal.SIGKILL)
 
-# =========================================================
-# ULTRASONIC
-# =========================================================
-
-def get_front_distance():
-
-    try:
-
-        resp = requests.get(
-            DISTANCE_URL,
-            timeout=0.2
-        )
-
-        return float(resp.text)
-
-    except:
-
-        return 999
-
-def get_rear_distance():
-
-    try:
-
-        resp = requests.get(
-            REAR_DISTANCE_URL,
-            timeout=0.2
-        )
-
-        return float(resp.text)
-
-    except:
-
-        return 999
-
-# =========================================================
-# BRIGHTNESS CHECK
-# =========================================================
-
-def check_brightness(frame):
-
-    brightness = np.mean(frame)
-
-    return brightness >= BRIGHTNESS_THRESHOLD
-
-# =========================================================
-# DETECT OBSTACLES
-# =========================================================
-
-def detect_obstacles(model, frame, prev_max_area):
-
-    img_rgb = cv2.cvtColor(
-        frame,
-        cv2.COLOR_BGR2RGB
-    )
-
-    results = model(img_rgb)
-
-    df = results.pandas().xyxy[0]
-
-    frame_center_x = frame.shape[1] / 2
-
-    danger = False
-    dead_end = False
-
-    turn_direction = 'right'
-
-    aeb_trigger = False
-
-    current_max_area = 0
-
-    if not df.empty:
-
-        df = df.copy()
-
-        df['area'] = (
-            (df['xmax'] - df['xmin'])
-            *
-            (df['ymax'] - df['ymin'])
-        )
-
-        df = df.sort_values(
-            'area',
-            ascending=False
-        ).reset_index(drop=True)
-
-        for _, row in df.iterrows():
-
-            x1 = int(row['xmin'])
-            y1 = int(row['ymin'])
-
-            x2 = int(row['xmax'])
-            y2 = int(row['ymax'])
-
-            label = row['name']
-
-            conf = row['confidence']
-
-            area = int(row['area'])
-
-            current_max_area = max(
-                current_max_area,
-                area
-            )
-
-            # BOX
-            cv2.rectangle(
-                frame,
-                (x1, y1),
-                (x2, y2),
-                (0, 255, 0),
-                2
-            )
-
-            cv2.putText(
-                frame,
-                f"{label} {conf:.0%} A:{area}",
-                (x1, y2 + 15),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (0, 255, 0),
-                1
-            )
-
-            obj_center_x = (x1 + x2) / 2
-
-            if obj_center_x < frame_center_x:
-
-                turn_direction = 'right'
-
-            else:
-
-                turn_direction = 'left'
-
-            # DANGER
-            if area > DEAD_END_AREA_THRESHOLD:
-
-                dead_end = True
-
-                update_log(
-                    f"DEAD END: {label} area={area}"
-                )
-
-                break
-
-            elif area > DANGER_AREA_THRESHOLD:
-
-                danger = True
-
-                update_log(
-                    f"DANGER: {label} area={area}"
-                )
-
-                break
-
-    area_expansion = (
-        current_max_area - prev_max_area
-    )
-
-    if (
-        prev_max_area > 0
-        and area_expansion > TTC_EXPANSION_THRESHOLD
-    ):
-
-        aeb_trigger = True
-
-        cv2.putText(
-            frame,
-            "AEB BRAKE",
-            (20, 50),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 0, 255),
-            3
-        )
-
-    return (
-        danger,
-        turn_direction,
-        dead_end,
-        aeb_trigger,
-        current_max_area,
-        frame
-    )
-
-# =========================================================
-# AI WORKER
-# =========================================================
-
-def ai_worker():
-
-    global latest_frame
-
-    model = None
-
-    try:
-
-        model = load_model()
+                    except:
+                        pass
 
     except Exception as e:
+        logger.warning(f"Camera cleanup failed: {e}")
 
-        update_log(f"Model load failed: {e}")
+def setup_camera():
 
-        update_log(
-            "PASSTHROUGH MODE ENABLED"
-        )
+    release_camera_pipeline()
 
-    current_action = "stop"
+    cam = Picamera2()
 
-    avoidance_timer = 0
+    config = cam.create_preview_configuration(
+        main={
+            "size": (CAMERA_WIDTH, CAMERA_HEIGHT),
+            "format": "RGB888"
+        }
+    )
 
-    camera_fail_count = 0
+    cam.configure(config)
 
-    prev_max_area = 0
+    cam.start()
 
-    needs_escape_turn = False
+    time.sleep(2)
 
-    last_turn_direction = "right"
+    logger.info("Camera ready")
 
-    send_command('stop', force=True)
-
-    update_log("AI Worker started.")
-
-    while True:
-
-        try:
-
-            # =====================================================
-            # CAMERA
-            # =====================================================
-
-            frame = capture_frame()
-
-            if frame is None:
-
-                ai_state["camera_ok"] = False
-
-                camera_fail_count += 1
-
-                if (
-                    camera_fail_count
-                    >= MAX_CAMERA_FAILURES
-                ):
-
-                    send_command(
-                        'stop',
-                        force=True
-                    )
-
-                    current_action = "stop"
-
-                    update_log(
-                        "Camera disconnected!"
-                    )
-
-                time.sleep(0.5)
-
-                continue
-
-            ai_state["camera_ok"] = True
-
-            camera_fail_count = 0
-
-            # =====================================================
-            # BRIGHTNESS CHECK
-            # =====================================================
-
-            if not check_brightness(frame):
-
-                send_command('stop', force=True)
-
-                current_action = "stop"
-
-                cv2.putText(
-                    frame,
-                    "CAMERA BLIND",
-                    (50, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0, 0, 255),
-                    2
-                )
-
-                with frame_lock:
-                    latest_frame = frame
-
-                time.sleep(0.1)
-
-                continue
-
-            # =====================================================
-            # SENSOR FUSION
-            # =====================================================
-
-            front_distance = 999
-            rear_distance = 999
-
-            if USE_ULTRASONIC:
-
-                front_distance = get_front_distance()
-
-                rear_distance = get_rear_distance()
-
-            ai_state["front_distance"] = front_distance
-            ai_state["rear_distance"] = rear_distance
-
-            # =====================================================
-            # NO MODEL
-            # =====================================================
-
-            if model is None:
-
-                cv2.putText(
-                    frame,
-                    "NO AI MODEL",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 255),
-                    2
-                )
-
-                with frame_lock:
-                    latest_frame = frame
-
-                time.sleep(0.05)
-
-                continue
-
-            # =====================================================
-            # DETECT
-            # =====================================================
-
-            (
-                danger,
-                turn_direction,
-                visual_dead_end,
-                aeb_trigger,
-                current_max_area,
-                annotated_frame
-            ) = detect_obstacles(
-                model,
-                frame,
-                prev_max_area
-            )
-
-            prev_max_area = current_max_area
-
-            # =====================================================
-            # SENSOR + AI FUSION
-            # =====================================================
-
-            is_dead_end = (
-                visual_dead_end
-                or front_distance < FRONT_STOP_DISTANCE
-            )
-
-            is_danger = (
-                danger
-                or front_distance < FRONT_DANGER_DISTANCE
-            )
-
-            ai_state["danger"] = is_danger
-            ai_state["dead_end"] = is_dead_end
-            ai_state["aeb_triggered"] = aeb_trigger
-
-            # =====================================================
-            # HUD
-            # =====================================================
-
-            cv2.putText(
-                annotated_frame,
-                f"Front: {front_distance:.1f} cm",
-                (10, 25),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2
-            )
-
-            cv2.putText(
-                annotated_frame,
-                f"Rear: {rear_distance:.1f} cm",
-                (10, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 0),
-                2
-            )
-
-            cv2.putText(
-                annotated_frame,
-                f"Action: {current_action}",
-                (10, 75),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 200, 255),
-                2
-            )
-
-            with frame_lock:
-                latest_frame = annotated_frame
-
-            # =====================================================
-            # AI PAUSED
-            # =====================================================
-
-            if not ai_state["is_running"]:
-
-                if current_action != "stop":
-
-                    send_command(
-                        "stop",
-                        force=True
-                    )
-
-                    current_action = "stop"
-
-                    update_log(
-                        "AI paused."
-                    )
-
-                ai_state["current_action"] = "paused"
-
-                time.sleep(0.2)
-
-                continue
-
-            # =====================================================
-            # CONTROL
-            # =====================================================
-
-            if time.time() >= avoidance_timer:
-
-                # AEB
-                if aeb_trigger:
-
-                    update_log(
-                        "AEB TRIGGERED"
-                    )
-
-                    send_command(
-                        'stop',
-                        force=True
-                    )
-
-                    avoidance_timer = (
-                        time.time() + 1.5
-                    )
-
-                    current_action = "AEB stop"
-
-                # DEAD END
-                elif is_dead_end:
-
-                    update_log(
-                        f"DEAD END | Front={front_distance:.1f}cm"
-                    )
-
-                    send_command(
-                        'stop',
-                        force=True
-                    )
-
-                    time.sleep(0.3)
-
-                    # Reverse possible
-                    if rear_distance > REAR_STOP_DISTANCE:
-
-                        update_log(
-                            f"Reversing | Rear={rear_distance:.1f}cm"
-                        )
-
-                        send_command(
-                            'backward',
-                            force=True
-                        )
-
-                        avoidance_timer = (
-                            time.time()
-                            + ESCAPE_BACKWARD_TIME
-                        )
-
-                        current_action = "backward"
-
-                        needs_escape_turn = True
-
-                    else:
-
-                        update_log(
-                            "Rear blocked -> rotating"
-                        )
-
-                        turn_direction = (
-                            "left"
-                            if last_turn_direction == "right"
-                            else "right"
-                        )
-
-                        send_command(
-                            turn_direction,
-                            force=True
-                        )
-
-                        last_turn_direction = turn_direction
-
-                        avoidance_timer = (
-                            time.time()
-                            + ESCAPE_TURN_TIME
-                        )
-
-                        current_action = (
-                            f"rotate {turn_direction}"
-                        )
-
-                # ESCAPE TURN
-                elif needs_escape_turn:
-
-                    update_log(
-                        f"Escape turn {last_turn_direction}"
-                    )
-
-                    send_command(
-                        last_turn_direction,
-                        force=True
-                    )
-
-                    avoidance_timer = (
-                        time.time()
-                        + POST_DEADEND_TURN_DURATION
-                    )
-
-                    current_action = (
-                        f"escape {last_turn_direction}"
-                    )
-
-                    needs_escape_turn = False
-
-                # NORMAL DANGER
-                elif is_danger:
-
-                    if turn_direction == last_turn_direction:
-
-                        turn_direction = (
-                            "left"
-                            if turn_direction == "right"
-                            else "right"
-                        )
-
-                    last_turn_direction = turn_direction
-
-                    update_log(
-                        f"Obstacle -> {turn_direction.upper()}"
-                    )
-
-                    send_command(
-                        turn_direction,
-                        force=True
-                    )
-
-                    avoidance_timer = (
-                        time.time()
-                        + TURN_DURATION
-                    )
-
-                    current_action = (
-                        f"avoiding {turn_direction}"
-                    )
-
-                # CLEAR PATH
-                else:
-
-                    if current_action != "go":
-
-                        update_log(
-                            "Clear path"
-                        )
-
-                        send_command(
-                            "go",
-                            force=True
-                        )
-
-                        current_action = "go"
-
-            ai_state["current_action"] = current_action
-
-            time.sleep(0.03)
-
-        except Exception as e:
-
-            update_log(f"System error: {e}")
-
-            send_command(
-                'stop',
-                force=True
-            )
-
-            time.sleep(1)
+    return cam
 
 # =========================================================
 # FLASK ROUTES
 # =========================================================
 
-@app.route('/')
-def index():
+@app.route('/control')
+def control():
+    cmd = request.args.get('cmd', '').lower()
+    global last_command
+    # Ignore duplicate command
+    if cmd == last_command:
+        update_last_command_time()
 
-    return render_template(
-        'index.html',
-        pi_ip=PI_IP,
-        snapshot_url=SNAPSHOT_URL
-    )
+        return "IGNORED"
 
-# =========================================================
-# VIDEO STREAM
-# =========================================================
+    last_command = cmd
 
-def generate_video():
+    update_last_command_time()
 
-    while True:
+    try:
 
-        with frame_lock:
+        if cmd == 'go':
+            go_forward()
 
-            if latest_frame is not None:
 
-                ret, buffer = cv2.imencode(
-                    '.jpg',
-                    latest_frame,
-                    [cv2.IMWRITE_JPEG_QUALITY, 60]
+        elif cmd == 'backward':
+            rear_distance = get_rear_distance()
+            if rear_distance < 15:
+                logger.warning(
+                    f"Rear obstacle detected: {rear_distance} cm"
                 )
+                stop_car()
+                return "REAR OBSTACLE", 403
+            go_backward()
 
-                if ret:
+        elif cmd == 'left':
+            turn_left()
 
-                    frame_bytes = buffer.tobytes()
+        elif cmd == 'right':
+            turn_right()
 
-                    yield (
-                        b'--frame\r\n'
-                        b'Content-Type: image/jpeg\r\n\r\n'
-                        + frame_bytes
-                        + b'\r\n'
-                    )
+        elif cmd == 'stop':
+            stop_car()
 
-        time.sleep(0.05)
+        else:
+            return "INVALID COMMAND", 400
+
+        return "OK"
+
+    except Exception as e:
+        logger.error(e)
+        return str(e), 500
+
+#api cho cam bien truoc
+@app.route('/distance')
+def distance_api():
+    return str(get_distance())
+
+#api cho cam bien sau
+@app.route('/rear_distance')
+def rear_distance_api():
+    return str(get_rear_distance())
+
+@app.route('/snapshot')
+def snapshot():
+
+    try:
+
+        with camera_lock:
+            frame = camera.capture_array()
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+        frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+        ret, buffer = cv2.imencode(
+            '.jpg',
+            frame,
+            [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
+        )
+
+        if not ret:
+            return "Encode failed", 500
+
+        return Response(
+            buffer.tobytes(),
+            mimetype='image/jpeg'
+        )
+
+    except Exception as e:
+        logger.error(e)
+        return str(e), 500
 
 @app.route('/video_feed')
 def video_feed():
 
+    def generate():
+
+        while True:
+
+            try:
+
+                with camera_lock:
+                    frame = camera.capture_array()
+
+                gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+                frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+                ret, buffer = cv2.imencode(
+                    '.jpg',
+                    frame,
+                    [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
+                )
+
+                if ret:
+
+                    yield (
+                        b'--frame\r\n'
+                        b'Content-Type: image/jpeg\r\n\r\n' +
+                        buffer.tobytes() +
+                        b'\r\n'
+                    )
+
+                time.sleep(0.03)
+
+            except Exception as e:
+                logger.error(e)
+                continue
+
     return Response(
-        generate_video(),
+        generate(),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
+@app.route('/')
+def index():
+
+    return """
+    <h1>Robot Server Running</h1>
+
+    <ul>
+        <li>/control?cmd=go</li>
+        <li>/control?cmd=backward</li>
+        <li>/control?cmd=left</li>
+        <li>/control?cmd=right</li>
+        <li>/control?cmd=stop</li>
+        <li>/distance</li>
+        <li>/rear_distance</li>
+        <li>/snapshot</li>
+        <li>/video_feed</li>
+    </ul>
+    """
+
 # =========================================================
-# API
+# CLEANUP
 # =========================================================
 
-@app.route('/api/status')
-def get_status():
+def cleanup(sig=None, frame=None):
 
-    return jsonify(ai_state)
+    logger.info("Cleaning up...")
 
-@app.route('/api/toggle_ai', methods=['POST'])
-def toggle_ai():
+    try:
+        stop_car()
 
-    data = request.json
+        pwm_left.stop()
+        pwm_right.stop()
 
-    if 'state' in data:
+    except:
+        pass
 
-        ai_state['is_running'] = bool(data['state'])
+    try:
+        if camera:
+            camera.stop()
+            camera.close()
 
-        action = (
-            "STARTED"
-            if ai_state['is_running']
-            else "STOPPED"
-        )
+    except:
+        pass
 
-        update_log(
-            f"User {action} AI"
-        )
+    GPIO.cleanup()
 
-        return jsonify({
-            "status": "success",
-            "is_running": ai_state['is_running']
-        })
-
-    return jsonify({
-        "status": "error"
-    }), 400
-
-@app.route('/api/emergency_stop', methods=['POST'])
-def emergency_stop():
-
-    ai_state['is_running'] = False
-
-    send_command(
-        "stop",
-        force=True
-    )
-
-    update_log(
-        "EMERGENCY STOP"
-    )
-
-    return jsonify({
-        "status": "success"
-    })
+    sys.exit(0)
 
 # =========================================================
 # MAIN
 # =========================================================
 
-if __name__ == '__main__':
+def main():
 
-    def signal_handler(sig, frame_signal):
+    global pwm_left
+    global pwm_right
+    global camera
 
-        logger.info("Exit signal received")
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
 
-        send_command(
-            'stop',
-            force=True
-        )
+    pwm_left, pwm_right = setup_gpio()
 
-        time.sleep(0.3)
+    camera = setup_camera()
 
-        sys.exit(0)
-
-    signal.signal(
-        signal.SIGINT,
-        signal_handler
-    )
-
-    # AI THREAD
-    t = threading.Thread(
-        target=ai_worker,
+    watchdog = threading.Thread(
+        target=watchdog_thread,
         daemon=True
     )
 
-    t.start()
+    watchdog.start()
 
     logger.info("=" * 50)
-    logger.info("WEB GUI RUNNING")
-    logger.info("Open http://127.0.0.1:8081")
+    logger.info("ROBOT SERVER STARTED")
     logger.info("=" * 50)
 
     app.run(
         host='0.0.0.0',
-        port=8081,
-        threaded=True,
-        use_reloader=False
+        port=5000,
+        threaded=False
     )
+
+if __name__ == '__main__':
+    main()
