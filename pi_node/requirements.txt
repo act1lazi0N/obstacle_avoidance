@@ -1,0 +1,8 @@
+# Pi Node Requirements (Raspberry Pi)
+# Install on Raspberry Pi: pip install -r pi_node/requirements.txt
+paho-mqtt>=2.0.0
+python-dotenv>=1.0.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+# picamera2 is pre-installed on Raspberry Pi OS
+# RPi.GPIO is pre-installed on Raspberry Pi OS
