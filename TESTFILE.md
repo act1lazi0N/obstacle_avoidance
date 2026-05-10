@@ -1,123 +1,89 @@
-# Hướng dẫn test hệ thống với môi trường giả lập
+# Hướng dẫn test hệ thống với môi trường giả lập (Simulation)
 
-`mock_pi_server.py` giúp bạn kiểm tra toàn bộ logic AI — mô hình YOLOv5, quyết định rẽ, kết nối mạng — **ngay trên máy tính, không cần Raspberry Pi, không tốn pin xe thật.**
+Module `simulation/mock_pi_node.py` giúp bạn kiểm tra toàn bộ logic AI — mô hình YOLOv5, cây hành vi (Behavior Tree), kết nối MQTT, cảnh báo Dashboard — **ngay trên máy tính, không cần thiết bị Raspberry Pi, không tốn pin xe thật.**
 
-Nếu laptop có **webcam**, bạn sẽ thấy video thật trên Web GUI giống như xem camera từ xe.
-
----
-
-## Cách hoạt động
-
-```
-Laptop (Terminal 1)              Laptop (Terminal 2)
-┌─────────────────────┐          ┌──────────────────────────┐
-│  mock_pi_server.py  │ ◄──────► │    ai_controller.py      │
-│                     │          │                          │
-│  Port :5000         │          │  Nhận ảnh từ :5000       │
-│  Gửi ảnh webcam     │          │  Phân tích YOLOv5        │
-│  (hoặc ảnh giả)     │          │  Hiện video lên Web GUI  │
-│  In lệnh ra console │          │  Web GUI: :8080          │
-└─────────────────────┘          └──────────────────────────┘
-```
+Mock Pi Node sẽ mô phỏng việc gửi hình ảnh từ **webcam PC** (hoặc tạo ảnh synthetic), tạo số liệu giả từ cảm biến siêu âm, và in ra log console các lệnh điều khiển Motor nhận được từ AI.
 
 ---
 
-## Bước 1 — Cấu hình IP về Localhost
+## Cách hoạt động (Cấu trúc Microservices MQTT)
 
-Mở (hoặc tạo) file `.env` ở **thư mục gốc dự án** (`AutoCar/.env`):
-
-```env
-CAR_IP=127.0.0.1
 ```
-
-Điều này đảm bảo AI Controller gửi request đến Mock Server thay vì xe thật.
+Laptop (Mock Pi Node)             Laptop (AI Brain)              Laptop (Web Dashboard)
+┌───────────────────────┐         ┌────────────────────────┐     ┌────────────────────────┐
+│ mock_pi_node.py       │ ◄─────► │ ai_brain.main          │ ◄─► │ web_dashboard.app      │
+│                       │         │                        │     │                        │
+│ - Dùng webcam PC      │         │ - Lấy ảnh từ MQTT      │     │ - Hiện Real-time state │
+│ - Gửi ảnh lên MQTT    │ MQTT    │ - Phân tích YOLO + BT  │ MQTT│ - Nút điều khiển       │
+│ - Mô phỏng HC-SR04    │         │ - Quyết định lái xe    │     │ - Video feed preview   │
+│ - In lệnh motor       │         │ - Gửi lệnh qua MQTT    │     │ - Port 8081            │
+└───────────────────────┘         └────────────────────────┘     └────────────────────────┘
+```
 
 ---
 
-## Bước 2 — Khởi động Mock Server
+## Bước 1 — Khởi động MQTT Broker
 
+Toàn bộ hệ thống giao tiếp qua Mosquitto MQTT Broker.
 Mở **Terminal 1**, chạy:
 
 ```bash
-cd Stimulation
-python mock_pi_server.py
+mosquitto -c mosquitto.conf
 ```
-
-Server sẽ tự động:
-- Nếu có **webcam** → dùng webcam làm camera (giống camera trên xe thật).
-- Nếu **không có webcam** → tạo ảnh giả (gradient xám + timestamp).
-
-Khi thấy dòng `MOCK PI SERVER RUNNING` là đã sẵn sàng.
 
 ---
 
-## Bước 3 — Khởi động AI Controller
+## Bước 2 — Khởi động Simulation (Mock Pi Node)
 
 Mở **Terminal 2**, chạy:
 
 ```bash
-cd Car_Server
-python ai_controller.py
+python -m simulation.mock_pi_node
 ```
 
-**Hai trường hợp có thể xảy ra:**
-
-| Trường hợp | Điều kiện | Kết quả trên Web GUI |
-|---|---|---|
-| **Chế độ AI đầy đủ** | Có file `models/best.pt` | Video webcam + bounding box nhận diện vật cản |
-| **Chế độ Passthrough** | Không có file `best.pt` hoặc model lỗi | Video webcam gốc hiện nguyên xi (có chữ "PASSTHROUGH") |
-
-> **💡 Lưu ý:** Dù chưa có model AI, bạn **vẫn xem được webcam** trên Web GUI nhờ chế độ Passthrough. Không cần phải có file `best.pt` mới thấy video.
+Server sẽ tự động:
+- Nếu máy có **webcam** → dùng webcam truyền ảnh lên topic `autocar/camera/frame`.
+- Nếu **không có webcam** → tạo ảnh đồ họa nền xám làm khung hình giả.
+- Lắng nghe topic `autocar/command/motor` và in các lệnh rẽ, tiến, lùi ra Terminal.
 
 ---
 
-## Bước 4 — Mở Web GUI trên trình duyệt
+## Bước 3 — Khởi động AI Brain
 
-Truy cập:
+Mở **Terminal 3**, chạy:
 
+```bash
+python -m ai_brain.main
 ```
-http://127.0.0.1:8080
-```
 
-**Các trang trên Web GUI:**
-
-| Trang | Nội dung |
-|---|---|
-| **Dashboard** | Video preview nhỏ + nút điều khiển + telemetry + log |
-| **Video Feed** | Xem video toàn màn hình |
-| **Settings** | Thông số kết nối và cấu hình AI |
+AI Brain sẽ nhận dữ liệu ảnh và cảm biến từ Mock Pi, chạy qua bộ Sensor Fusion và Behavior Tree, sau đó phát ra mệnh lệnh motor và trạng thái AI.
 
 ---
 
-## Bước 5 — Quan sát kết quả
+## Bước 4 — Mở Web Dashboard
 
-| Nơi quan sát | Nội dung |
-|---|---|
-| **Web GUI (`:8080`)** | Video từ webcam, trạng thái xe, nút START/STOP AI |
-| **Terminal 1 (Mock)** | In lệnh nhận được: `[MOTOR] Đi THẲNG`, `[MOTOR] Rẽ PHẢI`... |
-| **Terminal 2 (AI)** | Log phân tích YOLO, kết nối, cảnh báo |
+Mở **Terminal 4**, chạy:
 
-Nhấn **START AI** trên Web GUI để AI bắt đầu phân tích và ra lệnh cho xe (mock).
+```bash
+python -m web_dashboard.app
+```
+
+Truy cập trên trình duyệt:
+```
+http://127.0.0.1:8081
+```
+
+**Quan sát kết quả:**
+- **Web Dashboard:** Hiển thị video webcam, mức độ nguy hiểm (Danger Level), các vật cản, và trạng thái FSM/BT hiện tại.
+- **Terminal 2 (Mock Pi):** Bạn sẽ thấy các lệnh như `[MOCK] ⬆️ MOTOR: cruise speed=80 steer=0.00` xuất hiện khi AI ra quyết định.
+- Bạn có thể thử đưa đồ vật (chai nước, người) ra trước Webcam máy tính để xem xe "phanh khẩn cấp" hoặc "đánh lái" như thế nào trên log màn hình.
 
 ---
 
 ## Quay lại xe thật
 
-Khi test xong, đổi IP trong file `.env`:
-
-```env
-CAR_IP=192.168.1.105
-```
-
-*(Thay bằng IP thực tế của Raspberry Pi)*
-
-> **⚠️ Quan trọng:** Nếu quên đổi IP, xe thật sẽ bất động và Web GUI báo `Disconnected`.
-
----
-
-## Giới hạn của môi trường giả lập
-
-- Mock chỉ kiểm tra **logic phần mềm**, không kiểm tra motor/cảm biến thực.
-- Chế độ Passthrough (không model) chỉ hiện video, **không phát hiện vật cản**.
-- Để test YOLO detect đúng, cần có file `models/best.pt` + đưa đồ vật trước webcam.
-- Trước khi chạy xe thật, hãy chạy `hardware_test.py` trên Pi để kiểm tra phần cứng.
+Khi bạn đã tinh chỉnh xong AI và muốn đưa code lên xe thật:
+1. Đảm bảo file `.env` trên Pi trỏ `MQTT_BROKER_IP` đến máy tính Laptop (hoặc Pi chạy Broker).
+2. Tắt `mock_pi_node.py` trên Laptop.
+3. Chạy `python -m pi_node.main` trên mạch Raspberry Pi.
+Hệ thống AI và Dashboard không cần phải thay đổi hay cấu hình lại gì thêm.
