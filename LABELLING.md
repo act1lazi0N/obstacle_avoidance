@@ -1,28 +1,20 @@
 # Hướng dẫn tạo Dataset và huấn luyện YOLOv5
 
-Để xe tự hành nhận diện các vật cản cụ thể trong môi trường của bạn (dép, hộp, chai nước, ...), hãy thực hiện quy trình 3 bước: **Thu thập ảnh → Gán nhãn → Huấn luyện**.
+Để xe tự hành (ở module `ai_brain`) nhận diện các vật cản cụ thể trong môi trường của bạn (dép, hộp, chai nước, ...), hãy thực hiện quy trình 3 bước: **Thu thập ảnh → Gán nhãn → Huấn luyện**.
 
 ---
 
-## Bước 1 — Thu thập ảnh (`collect_data.py`)
+## Bước 1 — Thu thập ảnh
 
-Chúng ta sẽ dùng chính camera của Raspberry Pi để chụp ảnh, đảm bảo góc nhìn giống thực tế nhất khi xe đang chạy.
+Chúng ta sẽ dùng luồng video từ hệ thống MQTT để chụp ảnh, đảm bảo góc nhìn giống thực tế nhất khi xe đang chạy. Bạn có thể tự viết một script nhỏ subscribe vào topic `autocar/camera/frame` để lưu ảnh.
 
-**Cách thực hiện:**
-
-1. Khởi động Pi và chạy `robot_server.py`.
-2. Trên Laptop, vào thư mục `Car_Server` và chạy:
-
-```bash
-python collect_data.py
-```
-
-3. Đưa đồ vật ra trước camera của xe, xoay nhiều góc, nhiều khoảng cách.
-4. Nhấn **`q`** để dừng khi đã đủ ảnh.
+**Cách thực hiện (Nếu dùng camera thật trên Pi):**
+1. Khởi chạy Broker: `mosquitto -c mosquitto.conf`
+2. Trên Pi chạy Pi Node: `python -m pi_node.main`
+3. Trên Laptop, viết script lưu frame MQTT hoặc dùng công cụ ghi hình từ Dashboard.
+4. Đưa đồ vật ra trước camera của xe, xoay nhiều góc, nhiều khoảng cách.
 
 > **💡 Mẹo:** Chụp tối thiểu **150 – 200 ảnh** cho mỗi loại vật cản. Càng nhiều góc độ và điều kiện ánh sáng khác nhau, AI sẽ càng chính xác.
-
-Ảnh được lưu tự động vào thư mục `Car_Server/dataset_images/`.
 
 ---
 
@@ -34,7 +26,7 @@ Sử dụng nền tảng [Roboflow](https://roboflow.com) để vẽ khung nhậ
 
 1. **Tạo dự án mới:**
    - Chọn loại **Object Detection**.
-   - Kéo thả toàn bộ ảnh trong `dataset_images/` lên Roboflow.
+   - Kéo thả toàn bộ ảnh đã thu thập lên Roboflow.
 
 2. **Gán nhãn (Annotate):**
    - Vẽ khung hình chữ nhật **ôm sát mép** đồ vật.
@@ -50,7 +42,7 @@ Sử dụng nền tảng [Roboflow](https://roboflow.com) để vẽ khung nhậ
 
 ## Bước 3 — Huấn luyện mô hình (Google Colab)
 
-Dùng Google Colab để mượn GPU miễn phí.
+Dùng Google Colab để mượn GPU miễn phí huấn luyện model.
 
 **Các bước thực hiện:**
 
@@ -79,8 +71,8 @@ Dùng Google Colab để mượn GPU miễn phí.
 6. **Lấy file model sau khi huấn luyện xong:**
    - Vào thư mục `yolov5/runs/train/exp/weights/` trong Colab.
    - Tải file **`best.pt`** về máy tính.
-   - Copy file này **đè lên** file cũ tại `Car_Server/models/best.pt`.
+   - Đặt file này vào thư mục của bạn (ví dụ `yolov5s.pt` ở root directory hoặc sửa đường dẫn load model trong `ai_brain/perception/detector.py`).
 
 ---
 
-> Sau khi thay file `best.pt` mới, khởi động lại `ai_controller.py` là xe sẽ nhận diện đúng loại vật cản mới.
+> Sau khi thay file `.pt` mới, hãy chạy lại `ai_brain`: `python -m ai_brain.main` là xe sẽ nhận diện đúng loại vật cản mới qua YOLOv5.
