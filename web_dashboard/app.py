@@ -18,11 +18,12 @@ Usage:
 import signal
 import sys
 import logging
-from flask import Flask, render_template, jsonify, request
+import time
+from flask import Flask, render_template, jsonify, request, Response
 
 from shared.config import (
     DASHBOARD_PORT, DASHBOARD_HOST,
-    PI_MJPEG_URL, Topics,
+    Topics,
 )
 from shared.mqtt_client import AutoCarMQTT
 from web_dashboard.mqtt_listener import DashboardState, DashboardMQTTListener
@@ -48,7 +49,31 @@ def index():
     """Serve the dashboard page."""
     return render_template(
         "index.html",
-        mjpeg_url=PI_MJPEG_URL,
+        mjpeg_url="/video_feed",
+    )
+
+
+@app.route("/video_feed")
+def video_feed():
+    """Stream latest MQTT camera frames as MJPEG for the dashboard."""
+
+    def generate():
+        while True:
+            frame = dashboard_state.wait_for_camera_frame(timeout=2.0)
+            if frame is None:
+                time.sleep(0.1)
+                continue
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Cache-Control: no-cache\r\n\r\n"
+                + frame
+                + b"\r\n"
+            )
+
+    return Response(
+        generate(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
 
@@ -121,7 +146,7 @@ def main():
     signal.signal(signal.SIGTERM, cleanup)
 
     logger.info(f"Dashboard: http://localhost:{DASHBOARD_PORT}")
-    logger.info(f"Video feed: {PI_MJPEG_URL}")
+    logger.info(f"Video feed: http://localhost:{DASHBOARD_PORT}/video_feed")
 
     # Run Flask
     app.run(

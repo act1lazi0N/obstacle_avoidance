@@ -20,6 +20,7 @@ import time
 import threading
 import random
 import logging
+import platform
 
 import cv2
 import numpy as np
@@ -36,6 +37,9 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+_CAMERA_WARMUP_READS = 8
+_CAMERA_FAILURE_LIMIT = 10
 
 
 class MockPiNode:
@@ -57,6 +61,8 @@ class MockPiNode:
         self._use_camera = use_camera
         self._cap = None
         self._running = False
+        self._camera_source = "synthetic" if not use_camera else "opening"
+        self._camera_failures = 0
         self._current_state = "idle"
         self._current_speed = 0
         self._current_steer = 0.0
@@ -65,16 +71,21 @@ class MockPiNode:
         """Initialize camera and start all threads."""
         # Try webcam
         if self._use_camera:
-            self._cap = cv2.VideoCapture(self._camera_index)
-            if not self._cap.isOpened():
+            self._cap = self._open_camera(self._camera_index)
+            if self._cap is None:
                 logger.warning(
                     f"[MOCK] Cannot open webcam {self._camera_index}. "
                     "Using synthetic frames."
                 )
-                self._cap = None
                 self._use_camera = False
+                self._camera_source = "synthetic"
             else:
-                logger.info(f"[MOCK] Webcam {self._camera_index} opened.")
+                self._camera_source = "webcam"
+                logger.info(
+                    f"[MOCK] Webcam {self._camera_index} opened and readable."
+                )
+        else:
+            self._camera_source = "synthetic"
 
         # Subscribe to motor commands
         self._mqtt.subscribe_json(
@@ -97,6 +108,10 @@ class MockPiNode:
         ).start()
 
         logger.info("[MOCK] Mock Pi Node started.")
+        self._publish_event(
+            "mock_pi_started",
+            f"Mock Pi started with camera_source={self._camera_source}",
+        )
 
     def stop(self) -> None:
         self._running = False
@@ -145,21 +160,89 @@ class MockPiNode:
             {"state": state, "speed": speed, "steer": round(steer, 2)},
         )
 
+    def _open_camera(self, camera_index: int):
+        """Open and verify a webcam, preferring DirectShow on Windows."""
+        backends = []
+        if platform.system() == "Windows":
+            backends.extend([cv2.CAP_DSHOW, cv2.CAP_MSMF])
+        backends.append(cv2.CAP_ANY)
+
+        for backend in backends:
+            cap = cv2.VideoCapture(camera_index, backend)
+            if not cap.isOpened():
+                cap.release()
+                continue
+
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+            cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
+
+            for _ in range(_CAMERA_WARMUP_READS):
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    return cap
+                time.sleep(0.05)
+
+            cap.release()
+        return None
+
+    def _read_camera_frame(self):
+        if not self._cap or not self._use_camera:
+            self._camera_source = "synthetic"
+            return self._synthetic_frame()
+
+        ret, frame = self._cap.read()
+        if ret and frame is not None:
+            self._camera_failures = 0
+            self._camera_source = "webcam"
+            return cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
+
+        self._camera_failures += 1
+        logger.warning(
+            f"[MOCK] Webcam read failed "
+            f"({self._camera_failures}/{_CAMERA_FAILURE_LIMIT})."
+        )
+        if self._camera_failures >= _CAMERA_FAILURE_LIMIT:
+            logger.warning("[MOCK] Webcam unstable. Falling back to synthetic.")
+            self._publish_event(
+                "mock_camera_fallback",
+                "Webcam read failed repeatedly; using synthetic frames",
+            )
+            self._use_camera = False
+            if self._cap:
+                self._cap.release()
+                self._cap = None
+            self._camera_source = "synthetic"
+
+        return self._synthetic_frame()
+
+    def _publish_sensor_state(self, **extra) -> None:
+        payload = {
+            "camera_status": self._camera_source,
+            "source": "mock_pi_node",
+            "timestamp": time.time(),
+        }
+        payload.update(extra)
+        self._mqtt.publish_json(Topics.STATE_SENSORS, payload)
+
+    def _publish_event(self, event_type: str, message: str) -> None:
+        self._mqtt.publish_json(
+            Topics.EVENT,
+            {
+                "timestamp": time.time(),
+                "source": "mock_pi_node",
+                "type": event_type,
+                "message": message,
+            },
+            retain=True,
+        )
+
     def _camera_loop(self) -> None:
         """Publish camera frames at configured FPS."""
         interval = 1.0 / CAMERA_FPS
         while self._running:
             try:
-                if self._cap and self._use_camera:
-                    ret, frame = self._cap.read()
-                    if ret:
-                        frame = cv2.resize(
-                            frame, (CAMERA_WIDTH, CAMERA_HEIGHT)
-                        )
-                    else:
-                        frame = self._synthetic_frame()
-                else:
-                    frame = self._synthetic_frame()
+                frame = self._read_camera_frame()
 
                 # Overlay state info
                 cv2.putText(
@@ -176,20 +259,14 @@ class MockPiNode:
                 )
 
                 # Encode and publish
-                _, buf = cv2.imencode(
+                ok, buf = cv2.imencode(
                     ".jpg", frame,
                     [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
                 )
+                if not ok:
+                    raise RuntimeError("JPEG encoding failed")
                 self._mqtt.publish_bytes(Topics.CAMERA_FRAME, buf.tobytes())
-                self._mqtt.publish_json(
-                    Topics.STATE_SENSORS,
-                    {
-                        "camera_status": "synthetic"
-                        if not self._use_camera else "webcam",
-                        "source": "mock_pi_node",
-                        "timestamp": time.time(),
-                    },
-                )
+                self._publish_sensor_state()
 
             except Exception as e:
                 logger.error(f"[MOCK] Camera error: {e}")
@@ -216,16 +293,7 @@ class MockPiNode:
                 Topics.SENSOR_ULTRASONIC,
                 {"distance_cm": round(distance, 1)},
             )
-            self._mqtt.publish_json(
-                Topics.STATE_SENSORS,
-                {
-                    "ultrasonic_cm": round(distance, 1),
-                    "camera_status": "synthetic"
-                    if not self._use_camera else "webcam",
-                    "source": "mock_pi_node",
-                    "timestamp": time.time(),
-                },
-            )
+            self._publish_sensor_state(ultrasonic_cm=round(distance, 1))
             time.sleep(interval)
 
     @staticmethod
@@ -283,6 +351,7 @@ def main():
     logger.info("=" * 50)
 
     mqtt_client = AutoCarMQTT(client_id="mock_pi_node")
+    mqtt_client.set_will(Topics.STATUS_PI, "offline")
     try:
         mqtt_client.connect()
     except ConnectionError as e:

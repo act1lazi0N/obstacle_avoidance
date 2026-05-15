@@ -87,6 +87,9 @@ class DashboardState:
         self._last_pi_update = 0.0
         self._last_ai_update = 0.0
         self._message_times: dict[str, float] = {}
+        self._latest_camera_frame: bytes | None = None
+        self._last_camera_frame_time = 0.0
+        self._frame_condition = threading.Condition()
 
     def update_fsm(self, topic: str, data: dict[str, Any]) -> None:
         with self._lock:
@@ -145,6 +148,22 @@ class DashboardState:
                 self._sensors["ultrasonic_cm"] = float(data["distance_cm"])
                 self._brain["ultrasonic_cm"] = float(data["distance_cm"])
             self._last_pi_update = time.time()
+
+    def update_camera_frame(self, topic: str, payload: bytes) -> None:
+        with self._lock:
+            self._touch(topic)
+            self._last_pi_update = time.time()
+
+        with self._frame_condition:
+            self._latest_camera_frame = payload
+            self._last_camera_frame_time = time.time()
+            self._frame_condition.notify_all()
+
+    def wait_for_camera_frame(self, timeout: float = 2.0) -> bytes | None:
+        with self._frame_condition:
+            if self._latest_camera_frame is None:
+                self._frame_condition.wait(timeout)
+            return self._latest_camera_frame
 
     def update_perception(self, topic: str, data: dict[str, Any]) -> None:
         with self._lock:
@@ -215,6 +234,10 @@ class DashboardState:
                 round(now - max(self._message_times.values()), 2)
                 if self._message_times else None
             )
+            camera_frame_age = (
+                round(now - self._last_camera_frame_time, 2)
+                if self._last_camera_frame_time else None
+            )
 
             return {
                 "system": {
@@ -222,6 +245,7 @@ class DashboardState:
                     "ai_connected": ai_recent,
                     "pi_status": self._pi_status,
                     "latest_mqtt_age_s": latest_age,
+                    "camera_frame_age_s": camera_frame_age,
                     "message_age_s": message_age,
                 },
                 "fsm": deepcopy(self._fsm),
@@ -255,6 +279,7 @@ class DashboardMQTTListener:
         self._mqtt.subscribe_json(Topics.STATE_DECISION, self._handle_decision)
         self._mqtt.subscribe_json(Topics.STATE_SAFETY, self._handle_safety)
         self._mqtt.subscribe_json(Topics.EVENT, self._handle_event)
+        self._mqtt.subscribe(Topics.CAMERA_FRAME, self._handle_camera_frame)
         self._mqtt.subscribe(Topics.STATUS_PI, self._handle_pi_status)
         logger.info("[DASHBOARD] MQTT listener started")
 
@@ -281,6 +306,9 @@ class DashboardMQTTListener:
 
     def _handle_event(self, topic: str, data: dict[str, Any]) -> None:
         self._state.update_event(topic, data)
+
+    def _handle_camera_frame(self, topic: str, payload: bytes) -> None:
+        self._state.update_camera_frame(topic, payload)
 
     def _handle_pi_status(self, topic: str, payload: bytes) -> None:
         status = payload.decode("utf-8", errors="replace")
