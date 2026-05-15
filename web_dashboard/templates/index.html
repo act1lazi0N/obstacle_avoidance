@@ -256,6 +256,34 @@
             color: var(--green);
         }
 
+        .detail-grid {
+            display: grid;
+            gap: 8px;
+        }
+
+        .detail-row {
+            display: grid;
+            grid-template-columns: 110px 1fr;
+            gap: 8px;
+            align-items: start;
+            font-size: 12px;
+        }
+
+        .detail-label {
+            color: var(--text-dim);
+            text-transform: uppercase;
+            font-size: 10px;
+        }
+
+        .detail-value {
+            color: var(--text);
+            overflow-wrap: anywhere;
+        }
+
+        .detail-value.ok { color: var(--green); }
+        .detail-value.warn { color: var(--yellow); }
+        .detail-value.danger { color: var(--red); }
+
         @media (max-width: 768px) {
             .dashboard {
                 grid-template-columns: 1fr;
@@ -330,6 +358,36 @@
             <div class="card">
                 <div class="card-title">🎮 Motor Command</div>
                 <div class="motor-cmd" id="motorCmd">waiting...</div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Research State</div>
+                <div class="detail-grid">
+                    <div class="detail-row">
+                        <div class="detail-label">Camera</div>
+                        <div class="detail-value" id="cameraStatus">unknown</div>
+                    </div>
+                    <div class="detail-row">
+                        <div class="detail-label">Behavior</div>
+                        <div class="detail-value" id="selectedBehavior">waiting</div>
+                    </div>
+                    <div class="detail-row">
+                        <div class="detail-label">Reason</div>
+                        <div class="detail-value" id="decisionReason">waiting</div>
+                    </div>
+                    <div class="detail-row">
+                        <div class="detail-label">E-Stop</div>
+                        <div class="detail-value" id="estopStatus">clear</div>
+                    </div>
+                    <div class="detail-row">
+                        <div class="detail-label">MQTT Age</div>
+                        <div class="detail-value" id="mqttAge">—</div>
+                    </div>
+                    <div class="detail-row">
+                        <div class="detail-label">Event</div>
+                        <div class="detail-value" id="latestEvent">none</div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -407,6 +465,37 @@
                 document.getElementById('motorCmd').textContent =
                     `${cmd.action} | spd=${cmd.speed || 0} | str=${(cmd.steer || 0).toFixed(2)}`;
             }
+
+            const cameraStatus = data.sensors?.camera_status ||
+                data.brain.camera_status || 'unknown';
+            const cameraEl = document.getElementById('cameraStatus');
+            cameraEl.textContent = cameraStatus;
+            cameraEl.className = 'detail-value ' +
+                (cameraStatus === 'ok' || cameraStatus === 'synthetic' ||
+                 cameraStatus === 'webcam' ? 'ok' : 'warn');
+
+            document.getElementById('selectedBehavior').textContent =
+                data.decision?.selected_behavior ||
+                data.brain.selected_behavior || 'waiting';
+            document.getElementById('decisionReason').textContent =
+                data.decision?.reason ||
+                data.brain.decision_reason || 'waiting';
+
+            const estop = Boolean(data.safety?.emergency_stop) ||
+                data.fsm.state === 'emergency_stop';
+            const estopEl = document.getElementById('estopStatus');
+            estopEl.textContent = estop ? 'active' : 'clear';
+            estopEl.className = 'detail-value ' + (estop ? 'danger' : 'ok');
+
+            const mqttAge = data.system.latest_mqtt_age_s;
+            document.getElementById('mqttAge').textContent =
+                mqttAge === null || mqttAge === undefined ? '—' :
+                `${mqttAge.toFixed(2)}s`;
+
+            const event = data.event || {};
+            document.getElementById('latestEvent').textContent =
+                event.type && event.message ?
+                `${event.type}: ${event.message}` : 'none';
         }
 
         async function emergencyStop() {

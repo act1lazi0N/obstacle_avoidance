@@ -12,6 +12,7 @@ Connects the AI perception pipeline and behavior tree to MQTT:
 import time
 import threading
 import logging
+from typing import Any
 
 import cv2
 import numpy as np
@@ -60,6 +61,11 @@ class AIBrainBridge:
         self._last_frame_time = time.time()
         self._pi_online = True
         self._system_fault = False
+        self._camera_status = "waiting"
+        self._last_decision: dict[str, Any] = {
+            "selected_behavior": "waiting",
+            "reason": "waiting for first frame",
+        }
 
         # Blackboard reference
         self._blackboard = py_trees.blackboard.Client(name="AIBridge")
@@ -112,6 +118,7 @@ class AIBrainBridge:
         )
         process_thread.start()
         logger.info("[AI_BRIDGE] Processing loop started")
+        self._publish_event("ai_bridge_started", "AI bridge processing loop started")
 
     def stop(self) -> None:
         """Stop the processing loop."""
@@ -139,12 +146,15 @@ class AIBrainBridge:
         if self._pi_online and not was_online:
             logger.info("[AI_BRIDGE] ✅ Pi is ONLINE")
             self._system_fault = False
+            self._publish_event("pi_online", "Pi status changed to online")
         elif not self._pi_online and was_online:
             logger.critical(
                 "[AI_BRIDGE] 🚨 Pi went OFFLINE — setting system_fault=True"
             )
             self._system_fault = True
             self._blackboard.set(BBKeys.AI_ENABLED, False)
+            self._publish_safety("pi_offline")
+            self._publish_event("pi_offline", "Pi status changed to offline")
 
     def _handle_ai_toggle(self, topic: str, payload: bytes) -> None:
         """Toggle AI on/off from dashboard."""
@@ -180,6 +190,7 @@ class AIBrainBridge:
             try:
                 # 1. Check system fault (Pi offline)
                 if self._system_fault:
+                    self._publish_safety("system_fault")
                     time.sleep(0.5)
                     continue
 
@@ -193,6 +204,12 @@ class AIBrainBridge:
                     )
                     self._system_fault = True
                     self._blackboard.set(BBKeys.AI_ENABLED, False)
+                    self._camera_status = "stale"
+                    self._publish_safety("frame_timeout")
+                    self._publish_event(
+                        "frame_timeout",
+                        f"No camera frame for {frame_age:.1f}s",
+                    )
                     continue
 
                 # 2. Get latest frame
@@ -202,6 +219,7 @@ class AIBrainBridge:
 
                 if not jpeg_bytes:
                     self._blackboard.set(BBKeys.FRAME_AVAILABLE, False)
+                    self._camera_status = "waiting"
                     time.sleep(0.05)
                     continue
 
@@ -210,8 +228,10 @@ class AIBrainBridge:
                 frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                 if frame is None:
                     self._blackboard.set(BBKeys.FRAME_AVAILABLE, False)
+                    self._camera_status = "decode_failed"
                     time.sleep(0.05)
                     continue
+                self._camera_status = "ok"
 
                 # 2. Run detection
                 detection = self._detector.detect(frame)
@@ -235,6 +255,7 @@ class AIBrainBridge:
                 self._tree.tick()
 
                 # 7. Read motor command and publish
+                motor_cmd = {"action": "unknown", "speed": 0, "steer": 0.0}
                 try:
                     motor_cmd = self._blackboard.get(BBKeys.MOTOR_COMMAND)
                     if motor_cmd:
@@ -246,8 +267,16 @@ class AIBrainBridge:
 
                 # 8. Publish brain state (throttled)
                 self._frame_count += 1
+                self._last_decision = self._build_decision(perception, motor_cmd)
                 if self._frame_count % 5 == 0:
                     self._publish_brain_state(perception)
+                    self._publish_observability(
+                        detection,
+                        perception,
+                        motor_cmd,
+                        frame_age,
+                        elapsed=time.time() - start_time,
+                    )
 
             except Exception as e:
                 logger.error(f"[AI_BRIDGE] Process loop error: {e}", exc_info=True)
@@ -272,5 +301,135 @@ class AIBrainBridge:
             "camera_obstacles": perception.camera_obstacle_count,
             "motor_command": motor_cmd,
             "frame_count": self._frame_count,
+            "selected_behavior": self._last_decision["selected_behavior"],
+            "decision_reason": self._last_decision["reason"],
+            "camera_status": self._camera_status,
         }
         self._mqtt.publish_json(Topics.STATE_BRAIN, state, qos=0)
+
+    def _publish_observability(
+        self,
+        detection,
+        perception: FusedPerception,
+        motor_cmd: dict[str, Any],
+        frame_age: float,
+        elapsed: float,
+    ) -> None:
+        """Publish lightweight research telemetry without changing decisions."""
+        timestamp = time.time()
+        self._mqtt.publish_json(
+            Topics.STATE_SENSORS,
+            {
+                "timestamp": timestamp,
+                "ultrasonic_cm": perception.ultrasonic_cm,
+                "camera_status": self._camera_status,
+                "frame_age_ms": round(frame_age * 1000, 1),
+            },
+            qos=0,
+        )
+        self._mqtt.publish_json(
+            Topics.STATE_PERCEPTION,
+            {
+                "timestamp": timestamp,
+                "camera_status": self._camera_status,
+                "obstacle_count": detection.obstacle_count,
+                "max_area": detection.max_area,
+                "total_area": detection.total_area,
+                "dominant_region": detection.dominant_region,
+                "brightness": perception.brightness,
+                "is_blind": perception.is_blind,
+            },
+            qos=0,
+        )
+        self._mqtt.publish_json(
+            Topics.STATE_FUSION,
+            {
+                "timestamp": timestamp,
+                "danger_level": perception.danger_level,
+                "is_dead_end": perception.is_dead_end,
+                "is_collision_imminent": perception.is_collision_imminent,
+                "obstacle_region": perception.obstacle_region,
+                "steer_suggestion": perception.steer_suggestion,
+                "free_direction": perception.free_direction,
+                "area_expansion_rate": perception.area_expansion_rate,
+            },
+            qos=0,
+        )
+        self._mqtt.publish_json(
+            Topics.STATE_DECISION,
+            {
+                "timestamp": timestamp,
+                "selected_behavior": self._last_decision["selected_behavior"],
+                "reason": self._last_decision["reason"],
+                "motor_command": motor_cmd,
+                "tick_ms": round(elapsed * 1000, 1),
+            },
+            qos=0,
+        )
+        self._publish_safety("ok")
+
+    def _publish_safety(self, reason: str) -> None:
+        """Publish coarse safety/fault state for research visibility."""
+        self._mqtt.publish_json(
+            Topics.STATE_SAFETY,
+            {
+                "timestamp": time.time(),
+                "system_fault": self._system_fault,
+                "pi_online": self._pi_online,
+                "camera_status": self._camera_status,
+                "emergency_stop": reason in {"pi_offline", "frame_timeout"},
+                "reason": reason,
+            },
+            qos=0,
+        )
+
+    def _publish_event(self, event_type: str, message: str) -> None:
+        """Publish notable lifecycle/fault events."""
+        self._mqtt.publish_json(
+            Topics.EVENT,
+            {
+                "timestamp": time.time(),
+                "source": "ai_brain",
+                "type": event_type,
+                "message": message,
+            },
+            qos=0,
+            retain=True,
+        )
+
+    @staticmethod
+    def _build_decision(
+        perception: FusedPerception,
+        motor_cmd: dict[str, Any],
+    ) -> dict[str, str]:
+        """Derive a human-readable decision label from existing outputs."""
+        action = motor_cmd.get("action", "unknown")
+        if perception.is_blind:
+            return {
+                "selected_behavior": "camera_failsafe",
+                "reason": "camera blind or unavailable",
+            }
+        if perception.is_collision_imminent or perception.danger_level >= 0.95:
+            return {
+                "selected_behavior": "emergency_brake",
+                "reason": "collision imminent",
+            }
+        if perception.is_dead_end:
+            return {
+                "selected_behavior": "dead_end_escape",
+                "reason": "dead-end condition detected",
+            }
+        if action == "steer":
+            return {
+                "selected_behavior": "active_avoidance",
+                "reason": f"danger in {perception.obstacle_region}",
+            }
+        if perception.danger_level >= 0.2:
+            return {
+                "selected_behavior": "cautious_cruise",
+                "reason": f"danger level {perception.danger_level:.2f}",
+            }
+        return {
+            "selected_behavior": "free_cruise",
+            "reason": "clear path",
+        }

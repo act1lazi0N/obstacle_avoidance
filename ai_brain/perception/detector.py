@@ -7,6 +7,7 @@ and spatial classification (left/center/right).
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -80,6 +81,17 @@ class ObstacleDetector:
         """Load the YOLOv5 model."""
         import pathlib
         import platform
+
+        if (
+            not os.path.exists(self._model_path)
+            or os.path.getsize(self._model_path) == 0
+        ):
+            logger.warning(
+                "[DETECTOR] Model weights missing or empty: %s. "
+                "Using empty detections.",
+                self._model_path,
+            )
+            return
 
         is_windows = platform.system() == "Windows"
         if is_windows:

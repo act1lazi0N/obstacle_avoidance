@@ -36,6 +36,12 @@ class Topics:
 
     # AI → ALL: brain/BT state
     STATE_BRAIN = "autocar/state/brain"
+    STATE_SENSORS = "autocar/state/sensors"
+    STATE_PERCEPTION = "autocar/state/perception"
+    STATE_FUSION = "autocar/state/fusion"
+    STATE_DECISION = "autocar/state/decision"
+    STATE_SAFETY = "autocar/state/safety"
+    EVENT = "autocar/event"
 
     # Both → ALL: health/heartbeat
     STATE_HEALTH = "autocar/state/health"

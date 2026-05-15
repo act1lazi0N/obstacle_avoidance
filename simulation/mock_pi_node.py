@@ -181,6 +181,15 @@ class MockPiNode:
                     [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
                 )
                 self._mqtt.publish_bytes(Topics.CAMERA_FRAME, buf.tobytes())
+                self._mqtt.publish_json(
+                    Topics.STATE_SENSORS,
+                    {
+                        "camera_status": "synthetic"
+                        if not self._use_camera else "webcam",
+                        "source": "mock_pi_node",
+                        "timestamp": time.time(),
+                    },
+                )
 
             except Exception as e:
                 logger.error(f"[MOCK] Camera error: {e}")
@@ -206,6 +215,16 @@ class MockPiNode:
             self._mqtt.publish_json(
                 Topics.SENSOR_ULTRASONIC,
                 {"distance_cm": round(distance, 1)},
+            )
+            self._mqtt.publish_json(
+                Topics.STATE_SENSORS,
+                {
+                    "ultrasonic_cm": round(distance, 1),
+                    "camera_status": "synthetic"
+                    if not self._use_camera else "webcam",
+                    "source": "mock_pi_node",
+                    "timestamp": time.time(),
+                },
             )
             time.sleep(interval)
 

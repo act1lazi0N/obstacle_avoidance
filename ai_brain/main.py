@@ -46,8 +46,10 @@ def main():
     try:
         detector.setup()
     except Exception as e:
-        logger.critical(f"YOLOv5 model failed to load: {e}")
-        sys.exit(1)
+        logger.warning(
+            "YOLOv5 model failed to load; continuing with empty detections: %s",
+            e,
+        )
 
     fusion = SensorFusion()
 
