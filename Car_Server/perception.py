@@ -1,4 +1,5 @@
 import pathlib
+import os
 from dataclasses import dataclass
 
 import cv2
@@ -30,12 +31,13 @@ class VisionPerception:
         model_confidence=0.6,
         brightness_threshold=15.0,
         ttc_expansion_threshold=8000,
-        center_danger_threshold=0.16,
-        side_danger_threshold=0.22,
-        dead_end_center_threshold=0.20,
-        dead_end_side_threshold=0.16,
+        center_danger_threshold=0.22,
+        side_danger_threshold=0.45,
+        dead_end_center_threshold=0.42,
+        dead_end_side_threshold=0.38,
     ):
-        self.model_path = model_path or str(pathlib.Path(__file__).resolve().parent / "models" / "best.pt")
+        self.model_path = model_path or str(pathlib.Path(
+            __file__).resolve().parent / "models" / "best.pt")
         self.model_confidence = model_confidence
         self.brightness_threshold = brightness_threshold
         self.ttc_expansion_threshold = ttc_expansion_threshold
@@ -45,6 +47,16 @@ class VisionPerception:
         self.dead_end_side_threshold = dead_end_side_threshold
 
     def load_model(self):
+        if os.name != "nt":
+            model = torch.hub.load(
+                "ultralytics/yolov5",
+                "custom",
+                path=self.model_path,
+                force_reload=True,
+            )
+            model.conf = self.model_confidence
+            return model
+
         temp = pathlib.PosixPath
         try:
             pathlib.PosixPath = pathlib.WindowsPath
@@ -119,7 +131,8 @@ class VisionPerception:
                             contribution *= 1.15
                         corridor_scores[corridor_name] += contribution
 
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.rectangle(annotated, (x1, y1),
+                                  (x2, y2), (0, 255, 0), 2)
                     cv2.putText(
                         annotated,
                         f"{label} {confidence:.0%} A:{area}",
@@ -146,8 +159,10 @@ class VisionPerception:
                         color = (0, 200, 255)
                     elif name == "right":
                         color = (255, 0, 255)
-                    cv2.line(annotated, (start_x, roi_top), (start_x, height), color, 1)
-                    cv2.line(annotated, (end_x, roi_top), (end_x, height), color, 1)
+                    cv2.line(annotated, (start_x, roi_top),
+                             (start_x, height), color, 1)
+                    cv2.line(annotated, (end_x, roi_top),
+                             (end_x, height), color, 1)
 
                 cv2.putText(
                     annotated,
