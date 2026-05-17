@@ -48,7 +48,7 @@ MOTOR_RIGHT_EN  = 17
 MOTOR_RIGHT_IN1 = 27
 MOTOR_RIGHT_IN2 = 22
  
-DEFAULT_SPEED    = 80
+DEFAULT_SPEED    = 50
 WATCHDOG_TIMEOUT = 3.0
  
 CAMERA_WIDTH  = 320
@@ -59,10 +59,25 @@ TRIG_PIN = 5
 ECHO_PIN = 6
 # ──────────────────────────────────────────────────────────────
 # Thread-safety locks to prevent race conditions
-motor_lock = threading.Lock()
+motor_lock = threading.RLock()
 sonic_lock = threading.Lock()
 camera_lock = threading.Lock()
 _cmd_lock = threading.Lock()
+
+
+def clamp_speed(speed):
+    try:
+        value = DEFAULT_SPEED if speed is None else int(float(speed))
+    except (TypeError, ValueError):
+        value = DEFAULT_SPEED
+    return max(0, min(100, value))
+
+
+def set_motor_speed(pwm_left, pwm_right, speed=None):
+    duty_cycle = clamp_speed(speed)
+    pwm_left.ChangeDutyCycle(duty_cycle)
+    pwm_right.ChangeDutyCycle(duty_cycle)
+    return duty_cycle
 
 def setup_gpio():
     GPIO.setmode(GPIO.BCM)
@@ -104,45 +119,41 @@ def setup_gpio():
 #   IN1=LOW,  IN2=HIGH -> Reverse
 #   IN1=HIGH, IN2=HIGH -> Brake (active stop)
 # ─────────────────────────────────────────────────────────────────────────────
-def go_forward(pwm_left, pwm_right):
+def go_forward(pwm_left, pwm_right, speed=None):
     with motor_lock:
         GPIO.output(MOTOR_LEFT_IN1,  GPIO.HIGH)
         GPIO.output(MOTOR_LEFT_IN2,  GPIO.LOW)
         GPIO.output(MOTOR_RIGHT_IN1, GPIO.HIGH)
         GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
-        pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
-        pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
-    logger.info("[MOTOR] Moving forward")
+        duty_cycle = set_motor_speed(pwm_left, pwm_right, speed)
+    logger.info(f"[MOTOR] Moving forward at speed={duty_cycle}")
 
-def turn_left(pwm_left, pwm_right):
+def turn_left(pwm_left, pwm_right, speed=None):
     with motor_lock:
         GPIO.output(MOTOR_LEFT_IN1,  GPIO.LOW)   # Left wheel: reverse
         GPIO.output(MOTOR_LEFT_IN2,  GPIO.HIGH)
         GPIO.output(MOTOR_RIGHT_IN1, GPIO.HIGH)  # Right wheel: forward
         GPIO.output(MOTOR_RIGHT_IN2, GPIO.LOW)
-        pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
-        pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
-    logger.info("[MOTOR] Turning left")
+        duty_cycle = set_motor_speed(pwm_left, pwm_right, speed)
+    logger.info(f"[MOTOR] Turning left at speed={duty_cycle}")
 
-def turn_right(pwm_left, pwm_right):
+def turn_right(pwm_left, pwm_right, speed=None):
     with motor_lock:
         GPIO.output(MOTOR_LEFT_IN1,  GPIO.HIGH)  # Left wheel: forward
         GPIO.output(MOTOR_LEFT_IN2,  GPIO.LOW)
         GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)   # Right wheel: reverse
         GPIO.output(MOTOR_RIGHT_IN2, GPIO.HIGH)
-        pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
-        pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
-    logger.info("[MOTOR] Turning right")
+        duty_cycle = set_motor_speed(pwm_left, pwm_right, speed)
+    logger.info(f"[MOTOR] Turning right at speed={duty_cycle}")
 
-def go_backward(pwm_left, pwm_right):
+def go_backward(pwm_left, pwm_right, speed=None):
     with motor_lock:
         GPIO.output(MOTOR_LEFT_IN1,  GPIO.LOW)
         GPIO.output(MOTOR_LEFT_IN2,  GPIO.HIGH)
         GPIO.output(MOTOR_RIGHT_IN1, GPIO.LOW)
         GPIO.output(MOTOR_RIGHT_IN2, GPIO.HIGH)
-        pwm_left.ChangeDutyCycle(DEFAULT_SPEED)
-        pwm_right.ChangeDutyCycle(DEFAULT_SPEED)
-    logger.info("[MOTOR] Going backward")
+        duty_cycle = set_motor_speed(pwm_left, pwm_right, speed)
+    logger.info(f"[MOTOR] Going backward at speed={duty_cycle}")
 
 def stop_car(pwm_left, pwm_right):
     with motor_lock:
@@ -154,9 +165,9 @@ def stop_car(pwm_left, pwm_right):
         pwm_left.ChangeDutyCycle(100)
         pwm_right.ChangeDutyCycle(100)
 
-        # After 50ms disable PWM: car has fully stopped, release motors
-    time.sleep(0.05)
-    with motor_lock:
+        # Keep the RLock held through the brake pulse so another motor command
+        # cannot interleave before PWM is released.
+        time.sleep(0.05)
         pwm_left.ChangeDutyCycle(0)
         pwm_right.ChangeDutyCycle(0)
 
@@ -276,6 +287,7 @@ app = Flask(__name__)
 pwm_left = None
 pwm_right = None
 camera = None
+last_command_time = time.time()
 
 def get_distance():
     with sonic_lock:
@@ -307,20 +319,20 @@ def get_distance():
 
 @app.route('/control', methods=['GET'])
 def control():
-    global last_command_time
     cmd = request.args.get('cmd', '').lower()
-    last_command_time = time.time()
+    speed = request.args.get('speed', default=None, type=float)
+    update_last_command_time()
 
     if cmd == 'go':
-        go_forward(pwm_left, pwm_right)
+        go_forward(pwm_left, pwm_right, speed=speed)
     elif cmd == 'backward':
-        go_backward(pwm_left, pwm_right)
+        go_backward(pwm_left, pwm_right, speed=speed)
     elif cmd == 'stop':
         stop_car(pwm_left, pwm_right)
     elif cmd == 'left':
-        turn_left(pwm_left, pwm_right)
+        turn_left(pwm_left, pwm_right, speed=speed)
     elif cmd == 'right':
-        turn_right(pwm_left, pwm_right)
+        turn_right(pwm_left, pwm_right, speed=speed)
     else:
         return "Invalid", 400
     return "OK"
@@ -382,7 +394,7 @@ def index():
         "<ul>"
         "<li><a href='/snapshot'>/snapshot</a> - Capture image</li>"
         "<li><a href='/video_feed'>/video_feed</a> - View video</li>"
-        "<li>/control?cmd=go|stop|left|right - Control</li>"
+        "<li>/control?cmd=go|backward|stop|left|right&amp;speed=50 - Control</li>"
         "</ul>"
     )
 
