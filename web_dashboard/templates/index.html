@@ -4,523 +4,177 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AutoCar — Command Center</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        :root {
-            --bg: #0a0e17;
-            --surface: #111827;
-            --surface-2: #1a2332;
-            --border: #1f2937;
-            --text: #e5e7eb;
-            --text-dim: #6b7280;
-            --accent: #3b82f6;
-            --green: #10b981;
-            --yellow: #f59e0b;
-            --red: #ef4444;
-            --orange: #f97316;
-        }
-
-        body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-        }
-
-        .header {
-            background: linear-gradient(135deg, var(--surface), var(--surface-2));
-            border-bottom: 1px solid var(--border);
-            padding: 16px 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .header h1 {
-            font-size: 20px;
-            font-weight: 700;
-            background: linear-gradient(135deg, var(--accent), #8b5cf6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .header .status-dots {
-            display: flex;
-            gap: 12px;
-        }
-
-        .status-dot {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 12px;
-            color: var(--text-dim);
-        }
-
-        .status-dot .dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--red);
-        }
-
-        .status-dot .dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
-
-        .dashboard {
-            display: grid;
-            grid-template-columns: 1fr 320px;
-            gap: 16px;
-            padding: 16px 24px;
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 16px;
-        }
-
-        .card-title {
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: var(--text-dim);
-            margin-bottom: 12px;
-        }
-
-        /* Video feed */
-        .video-container {
-            grid-column: 1 / 2;
-        }
-
-        .video-container img {
-            width: 100%;
-            border-radius: 8px;
-            background: #000;
-            min-height: 240px;
-        }
-
-        /* Side panel */
-        .side-panel {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        /* FSM State */
-        .fsm-state {
-            text-align: center;
-        }
-
-        .fsm-badge {
-            display: inline-block;
-            padding: 8px 20px;
-            border-radius: 20px;
-            font-size: 16px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            background: var(--surface-2);
-            border: 2px solid var(--accent);
-            color: var(--accent);
-            transition: all 0.3s;
-        }
-
-        .fsm-badge.cruising { border-color: var(--green); color: var(--green); }
-        .fsm-badge.steering_left, .fsm-badge.steering_right {
-            border-color: var(--yellow); color: var(--yellow);
-        }
-        .fsm-badge.braking, .fsm-badge.reversing {
-            border-color: var(--orange); color: var(--orange);
-        }
-        .fsm-badge.emergency_stop {
-            border-color: var(--red); color: var(--red);
-            animation: pulse 1s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
-        /* Danger meter */
-        .danger-meter {
-            position: relative;
-            height: 24px;
-            background: var(--surface-2);
-            border-radius: 12px;
-            overflow: hidden;
-            margin-top: 8px;
-        }
-
-        .danger-fill {
-            height: 100%;
-            border-radius: 12px;
-            transition: width 0.3s, background 0.3s;
-            width: 0%;
-        }
-
-        .danger-label {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 11px;
-            font-weight: 600;
-        }
-
-        /* Stats grid */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-        }
-
-        .stat {
-            background: var(--surface-2);
-            border-radius: 8px;
-            padding: 10px;
-            text-align: center;
-        }
-
-        .stat-value {
-            font-size: 20px;
-            font-weight: 700;
-            color: var(--accent);
-        }
-
-        .stat-label {
-            font-size: 10px;
-            color: var(--text-dim);
-            text-transform: uppercase;
-            margin-top: 2px;
-        }
-
-        /* Controls */
-        .controls {
-            grid-column: 1 / -1;
-            display: flex;
-            gap: 12px;
-            justify-content: center;
-        }
-
-        .btn {
-            padding: 10px 24px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .btn:hover { transform: translateY(-1px); }
-        .btn:active { transform: translateY(0); }
-
-        .btn-estop {
-            background: var(--red);
-            color: white;
-            font-size: 16px;
-            padding: 12px 32px;
-        }
-
-        .btn-estop:hover { background: #dc2626; box-shadow: 0 0 20px rgba(239,68,68,0.3); }
-
-        .btn-reset {
-            background: var(--surface-2);
-            color: var(--text);
-            border: 1px solid var(--border);
-        }
-
-        .btn-reset:hover { border-color: var(--accent); }
-
-        .btn-ai {
-            background: var(--accent);
-            color: white;
-        }
-
-        .btn-ai:hover { background: #2563eb; }
-        .btn-ai.off { background: var(--text-dim); }
-
-        /* Motor command display */
-        .motor-cmd {
-            font-family: 'Consolas', monospace;
-            font-size: 12px;
-            background: var(--surface-2);
-            padding: 8px;
-            border-radius: 6px;
-            color: var(--green);
-        }
-
-        .detail-grid {
-            display: grid;
-            gap: 8px;
-        }
-
-        .detail-row {
-            display: grid;
-            grid-template-columns: 110px 1fr;
-            gap: 8px;
-            align-items: start;
-            font-size: 12px;
-        }
-
-        .detail-label {
-            color: var(--text-dim);
-            text-transform: uppercase;
-            font-size: 10px;
-        }
-
-        .detail-value {
-            color: var(--text);
-            overflow-wrap: anywhere;
-        }
-
-        .detail-value.ok { color: var(--green); }
-        .detail-value.warn { color: var(--yellow); }
-        .detail-value.danger { color: var(--red); }
-
-        @media (max-width: 768px) {
-            .dashboard {
-                grid-template-columns: 1fr;
-            }
-        }
-    </style>
+    <!-- Thêm font chữ hiện đại -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <!-- Link to separated CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-    <div class="header">
-        <h1>🚗 AutoCar Command Center</h1>
-        <div class="status-dots">
-            <div class="status-dot">
-                <span class="dot" id="piDot"></span>
-                Pi Node
+    <!-- Background Effects -->
+    <div class="bg-glow blob-1"></div>
+    <div class="bg-glow blob-2"></div>
+    <div class="bg-glow blob-3"></div>
+
+    <!-- Header -->
+    <div class="glass-header">
+        <div class="brand">
+            <h1>AutoCar Control Center</h1>
+            <div class="subtitle">Autonomous Obstacle Avoidance Research Interface</div>
+        </div>
+        <div class="header-right">
+            <div class="time-pulse">
+                <span id="sysTimestamp" class="timestamp">00:00:00</span>
+                <span class="conn-pulse"></span>
             </div>
-            <div class="status-dot">
-                <span class="dot" id="aiDot"></span>
-                AI Brain
+            <div class="status-pills">
+                <div class="status-pill">
+                    <span class="dot" id="piDot"></span>
+                    <span>Pi Node</span>
+                </div>
+                <div class="status-pill">
+                    <span class="dot" id="aiDot"></span>
+                    <span>AI Brain</span>
+                </div>
             </div>
         </div>
     </div>
 
-    <div class="dashboard">
-        <!-- Video Feed -->
-        <div class="card video-container">
-            <div class="card-title">📷 Camera Feed</div>
-            <img id="videoFeed" src="{{ mjpeg_url }}" alt="Camera feed"
-                 onerror="this.alt='Camera offline'">
+    <!-- Main Content -->
+    <div class="dashboard-grid">
+        
+        <!-- Left Column (Camera + Controls) -->
+        <div class="main-column">
+            <!-- Video Feed -->
+            <div class="glass-card camera-card">
+                <div class="card-header">
+                    <div class="card-title">Camera Feed</div>
+                </div>
+                <div class="camera-wrapper" id="cameraWrapper">
+                    <div class="camera-placeholder" id="cameraPlaceholder">
+                        <svg class="camera-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                            <circle cx="12" cy="13" r="4"></circle>
+                        </svg>
+                        <p>Awaiting camera stream...</p>
+                    </div>
+                    <img id="videoFeed" src="{{ mjpeg_url }}" alt="Camera feed" onload="document.getElementById('cameraPlaceholder').style.display='none'" onerror="this.style.display='none'; document.getElementById('cameraPlaceholder').style.display='flex'">
+                    <div class="camera-status-overlay">
+                        <span class="live-dot"></span> LIVE
+                    </div>
+                </div>
+            </div>
+
+            <!-- Controls (Placed securely under camera feed) -->
+            <div class="glass-card">
+                <div class="controls-grid">
+                    <button class="btn btn-estop" id="btnEstop" onclick="emergencyStop()">
+                        EMERGENCY STOP
+                    </button>
+                    <div class="controls-row">
+                        <button class="btn btn-reset" onclick="resetEstop()">
+                            RESET
+                        </button>
+                        <button class="btn btn-ai" id="btnAI" onclick="toggleAI()">
+                            AI ON
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
 
-        <!-- Side Panel -->
-        <div class="side-panel">
+        <!-- Right Column (Status Panels) -->
+        <div class="side-column">
             <!-- FSM State -->
-            <div class="card fsm-state">
-                <div class="card-title">🔄 Motor State</div>
+            <div class="glass-card">
+                <div class="card-title" style="margin-bottom: 16px;">Motor State</div>
                 <div class="fsm-badge" id="fsmBadge">IDLE</div>
             </div>
 
             <!-- Danger Level -->
-            <div class="card">
-                <div class="card-title">⚠️ Danger Level</div>
+            <div class="glass-card">
+                <div class="danger-label-container">
+                    <span class="card-title">Danger Level</span>
+                    <span class="danger-percent" id="dangerLabel">0%</span>
+                </div>
                 <div class="danger-meter">
                     <div class="danger-fill" id="dangerFill"></div>
-                    <div class="danger-label" id="dangerLabel">0%</div>
                 </div>
             </div>
 
-            <!-- Stats -->
-            <div class="card">
-                <div class="card-title">📊 Sensors</div>
+            <!-- Sensors -->
+            <div class="glass-card">
+                <div class="card-title" style="margin-bottom: 16px;">Sensors</div>
                 <div class="stats-grid">
-                    <div class="stat">
+                    <div class="stat-box">
                         <div class="stat-value" id="ultrasonicVal">—</div>
-                        <div class="stat-label">Distance (cm)</div>
+                        <div class="stat-label">Dist (cm)</div>
                     </div>
-                    <div class="stat">
-                        <div class="stat-value" id="obstacleCount">0</div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="obstacleCount">000</div>
                         <div class="stat-label">Obstacles</div>
                     </div>
-                    <div class="stat">
-                        <div class="stat-value" id="speedVal">0</div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="speedVal">000</div>
                         <div class="stat-label">Speed</div>
                     </div>
-                    <div class="stat">
-                        <div class="stat-value" id="steerVal">0.0</div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="steerVal">00.0</div>
                         <div class="stat-label">Steer</div>
                     </div>
                 </div>
             </div>
 
-            <!-- Motor Command -->
-            <div class="card">
-                <div class="card-title">🎮 Motor Command</div>
-                <div class="motor-cmd" id="motorCmd">waiting...</div>
-            </div>
+            <!-- Research State -->
+            <div class="glass-card">
+                <div class="card-title" style="margin-bottom: 16px;">Research State</div>
+                <div class="detail-list">
+                    <div class="detail-group">
+                        <div class="detail-group-title">System</div>
+                        <div class="detail-item">
+                            <span class="detail-label">Camera</span>
+                            <span class="state-badge" id="cameraStatus">UNKNOWN</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">MQTT Age</span>
+                            <span class="state-badge" id="mqttAge">—</span>
+                        </div>
+                    </div>
+                    
+                    <div class="detail-group">
+                        <div class="detail-group-title">AI</div>
+                        <div class="detail-item">
+                            <span class="detail-label">Behavior</span>
+                            <span class="state-badge" id="selectedBehavior">WAITING</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Reason</span>
+                            <span class="state-badge" id="decisionReason">WAITING</span>
+                        </div>
+                    </div>
 
-            <div class="card">
-                <div class="card-title">Research State</div>
-                <div class="detail-grid">
-                    <div class="detail-row">
-                        <div class="detail-label">Camera</div>
-                        <div class="detail-value" id="cameraStatus">unknown</div>
-                    </div>
-                    <div class="detail-row">
-                        <div class="detail-label">Behavior</div>
-                        <div class="detail-value" id="selectedBehavior">waiting</div>
-                    </div>
-                    <div class="detail-row">
-                        <div class="detail-label">Reason</div>
-                        <div class="detail-value" id="decisionReason">waiting</div>
-                    </div>
-                    <div class="detail-row">
-                        <div class="detail-label">E-Stop</div>
-                        <div class="detail-value" id="estopStatus">clear</div>
-                    </div>
-                    <div class="detail-row">
-                        <div class="detail-label">MQTT Age</div>
-                        <div class="detail-value" id="mqttAge">—</div>
-                    </div>
-                    <div class="detail-row">
-                        <div class="detail-label">Event</div>
-                        <div class="detail-value" id="latestEvent">none</div>
+                    <div class="detail-group">
+                        <div class="detail-group-title">Safety</div>
+                        <div class="detail-item">
+                            <span class="detail-label">E-Stop</span>
+                            <span class="state-badge" id="estopStatus">CLEAR</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Event</span>
+                            <span class="state-badge" id="latestEvent">NONE</span>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- Controls -->
-        <div class="controls">
-            <button class="btn btn-estop" id="btnEstop" onclick="emergencyStop()">
-                ⛔ E-STOP
-            </button>
-            <button class="btn btn-reset" onclick="resetEstop()">
-                🔄 Reset
-            </button>
-            <button class="btn btn-ai" id="btnAI" onclick="toggleAI()">
-                🤖 AI ON
-            </button>
+            <!-- Motor Command -->
+            <div class="glass-card">
+                <div class="card-title" style="margin-bottom: 16px;">Motor Command</div>
+                <div class="motor-cmd" id="motorCmd">waiting...</div>
+            </div>
         </div>
     </div>
 
-    <script>
-        let aiEnabled = true;
-
-        // Poll state every 500ms
-        async function pollState() {
-            try {
-                const res = await fetch('/api/state');
-                const data = await res.json();
-                updateUI(data);
-            } catch (e) {
-                console.error('Poll error:', e);
-            }
-        }
-
-        function updateUI(data) {
-            // Connection dots
-            document.getElementById('piDot').className =
-                'dot' + (data.system.pi_connected ? ' online' : '');
-            document.getElementById('aiDot').className =
-                'dot' + (data.system.ai_connected ? ' online' : '');
-
-            // FSM Badge
-            const badge = document.getElementById('fsmBadge');
-            const state = data.fsm.state;
-            badge.textContent = state.toUpperCase().replace('_', ' ');
-            badge.className = 'fsm-badge ' + state;
-
-            // Danger meter
-            const danger = data.brain.danger_level;
-            const fill = document.getElementById('dangerFill');
-            const pct = Math.round(danger * 100);
-            fill.style.width = pct + '%';
-            document.getElementById('dangerLabel').textContent = pct + '%';
-
-            if (danger < 0.2) {
-                fill.style.background = 'var(--green)';
-            } else if (danger < 0.5) {
-                fill.style.background = 'var(--yellow)';
-            } else if (danger < 0.8) {
-                fill.style.background = 'var(--orange)';
-            } else {
-                fill.style.background = 'var(--red)';
-            }
-
-            // Stats
-            document.getElementById('ultrasonicVal').textContent =
-                data.brain.ultrasonic_cm < 999 ?
-                data.brain.ultrasonic_cm.toFixed(1) : '—';
-            document.getElementById('obstacleCount').textContent =
-                data.brain.camera_obstacles;
-            document.getElementById('speedVal').textContent = data.fsm.speed;
-            document.getElementById('steerVal').textContent =
-                data.fsm.steer.toFixed(2);
-
-            // Motor command
-            const cmd = data.brain.motor_command;
-            if (cmd && cmd.action) {
-                document.getElementById('motorCmd').textContent =
-                    `${cmd.action} | spd=${cmd.speed || 0} | str=${(cmd.steer || 0).toFixed(2)}`;
-            }
-
-            const cameraStatus = data.sensors?.camera_status ||
-                data.brain.camera_status || 'unknown';
-            const cameraEl = document.getElementById('cameraStatus');
-            cameraEl.textContent = cameraStatus;
-            cameraEl.className = 'detail-value ' +
-                (cameraStatus === 'ok' || cameraStatus === 'synthetic' ||
-                 cameraStatus === 'webcam' ? 'ok' : 'warn');
-
-            document.getElementById('selectedBehavior').textContent =
-                data.decision?.selected_behavior ||
-                data.brain.selected_behavior || 'waiting';
-            document.getElementById('decisionReason').textContent =
-                data.decision?.reason ||
-                data.brain.decision_reason || 'waiting';
-
-            const estop = Boolean(data.safety?.emergency_stop) ||
-                data.fsm.state === 'emergency_stop';
-            const estopEl = document.getElementById('estopStatus');
-            estopEl.textContent = estop ? 'active' : 'clear';
-            estopEl.className = 'detail-value ' + (estop ? 'danger' : 'ok');
-
-            const mqttAge = data.system.latest_mqtt_age_s;
-            document.getElementById('mqttAge').textContent =
-                mqttAge === null || mqttAge === undefined ? '—' :
-                `${mqttAge.toFixed(2)}s`;
-
-            const event = data.event || {};
-            document.getElementById('latestEvent').textContent =
-                event.type && event.message ?
-                `${event.type}: ${event.message}` : 'none';
-        }
-
-        async function emergencyStop() {
-            await fetch('/api/estop', { method: 'POST' });
-        }
-
-        async function resetEstop() {
-            await fetch('/api/reset', { method: 'POST' });
-        }
-
-        async function toggleAI() {
-            aiEnabled = !aiEnabled;
-            await fetch('/api/ai/toggle', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: aiEnabled }),
-            });
-            const btn = document.getElementById('btnAI');
-            btn.textContent = aiEnabled ? '🤖 AI ON' : '🤖 AI OFF';
-            btn.className = 'btn btn-ai' + (aiEnabled ? '' : ' off');
-        }
-
-        // Start polling
-        setInterval(pollState, 500);
-        pollState();
-    </script>
+    <!-- Link to separated JS -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
 </html>
