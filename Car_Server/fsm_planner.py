@@ -9,6 +9,7 @@ class DriveState(Enum):
     BRAKE = "BRAKE"
     REVERSE = "REVERSE"
     TURN = "TURN"
+    RECOVER_FORWARD = "RECOVER_FORWARD"
     STUCK = "STUCK"
 
 
@@ -49,9 +50,11 @@ class DrivePlanner:
         reverse_speed=40,
         escape_reverse_speed=42,
         escape_turn_speed=48,
+        recover_forward_speed=42,
         turn_duration=0.55,
         reverse_duration=0.8,
         escape_turn_duration=0.9,
+        recover_forward_duration=0.35,
         stuck_pause_duration=0.25,
         stuck_trigger_count=3,
         brake_enter_cm=12.0,
@@ -60,15 +63,18 @@ class DrivePlanner:
         reverse_exit_cm=24.0,
         turn_enter_cm=30.0,
         turn_exit_cm=36.0,
+        turn_balance_margin=0.05,
     ):
         self.forward_speed = forward_speed
         self.turn_speed = turn_speed
         self.reverse_speed = reverse_speed
         self.escape_reverse_speed = escape_reverse_speed
         self.escape_turn_speed = escape_turn_speed
+        self.recover_forward_speed = recover_forward_speed
         self.turn_duration = turn_duration
         self.reverse_duration = reverse_duration
         self.escape_turn_duration = escape_turn_duration
+        self.recover_forward_duration = recover_forward_duration
         self.stuck_pause_duration = stuck_pause_duration
         self.stuck_trigger_count = stuck_trigger_count
         self.brake_enter_cm = brake_enter_cm
@@ -77,6 +83,7 @@ class DrivePlanner:
         self.reverse_exit_cm = reverse_exit_cm
         self.turn_enter_cm = turn_enter_cm
         self.turn_exit_cm = turn_exit_cm
+        self.turn_balance_margin = turn_balance_margin
 
         self.state = DriveState.IDLE
         self.command = "stop"
@@ -84,10 +91,13 @@ class DrivePlanner:
         self.turn_direction = None
         self.state_deadline = 0.0
         self.stuck_count = 0
+        self.failed_escape_count = 0
         self.next_escape_turn = "left"
+        self.balanced_turn_direction = "left"
         self.pending_followup_turn_direction = None
         self.pending_followup_turn_speed = None
         self.pending_followup_turn_duration = 0.0
+        self.pending_probe_after_turn = False
         self.brake_active = False
         self.reverse_active = False
         self.turn_active = False
@@ -125,6 +135,12 @@ class DrivePlanner:
         )
 
     def _choose_turn_direction(self, left_score, right_score):
+        if abs(left_score - right_score) <= self.turn_balance_margin:
+            direction = self.balanced_turn_direction
+            self.balanced_turn_direction = (
+                "right" if direction == "left" else "left"
+            )
+            return direction
         if left_score < right_score:
             return "left"
         if right_score < left_score:
@@ -217,6 +233,7 @@ class DrivePlanner:
         followup_turn_direction,
         followup_turn_speed,
         followup_turn_duration,
+        probe_after_turn,
         danger,
         dead_end,
         reason,
@@ -224,6 +241,7 @@ class DrivePlanner:
         self.pending_followup_turn_direction = followup_turn_direction
         self.pending_followup_turn_speed = followup_turn_speed
         self.pending_followup_turn_duration = followup_turn_duration
+        self.pending_probe_after_turn = probe_after_turn
         return self._transition(
             obs=obs,
             new_state=DriveState.REVERSE,
@@ -234,6 +252,21 @@ class DrivePlanner:
             aeb_triggered=False,
             reason=reason,
             deadline=obs.timestamp + duration,
+            turn_direction=None,
+        )
+
+    def _start_recover_forward(self, obs, danger, dead_end, reason):
+        self.pending_probe_after_turn = False
+        return self._transition(
+            obs=obs,
+            new_state=DriveState.RECOVER_FORWARD,
+            command="go",
+            speed=self.recover_forward_speed,
+            danger=danger,
+            dead_end=dead_end,
+            aeb_triggered=False,
+            reason=reason,
+            deadline=obs.timestamp + self.recover_forward_duration,
             turn_direction=None,
         )
 
@@ -261,38 +294,46 @@ class DrivePlanner:
         self.pending_followup_turn_speed = None
         self.pending_followup_turn_duration = 0.0
 
+    def _clear_probe_plan(self):
+        self.pending_probe_after_turn = False
+
+    def _reset_escape_plan(self):
+        self._clear_followup_turn()
+        self._clear_probe_plan()
+
     def plan(self, obs):
         self._update_distance_zones(obs.distance_cm)
-        preferred_turn = self._choose_turn_direction(obs.left_score, obs.right_score)
-
-        danger = self.turn_active or self.reverse_active or obs.visual_danger
-        dead_end = self.reverse_active or obs.visual_dead_end
+        front_blocked = self.reverse_active or obs.visual_dead_end
+        danger = self.turn_active or front_blocked or obs.visual_danger
+        dead_end = self.failed_escape_count > 0 or self.state == DriveState.STUCK
         aeb_triggered = self.brake_active or obs.aeb_triggered
 
         if not obs.ai_enabled:
             self.stuck_count = 0
-            self._clear_followup_turn()
+            self.failed_escape_count = 0
+            self._reset_escape_plan()
             return self._transition(
                 obs,
                 DriveState.IDLE,
                 "stop",
                 None,
                 danger,
-                dead_end,
+                False,
                 aeb_triggered,
                 reason="AI paused",
             )
 
         if not obs.model_ready or not obs.camera_ok:
             self.stuck_count = 0
-            self._clear_followup_turn()
+            self.failed_escape_count = 0
+            self._reset_escape_plan()
             return self._transition(
                 obs,
                 DriveState.IDLE,
                 "stop",
                 None,
                 danger,
-                dead_end,
+                False,
                 aeb_triggered,
                 reason="perception unavailable",
             )
@@ -319,6 +360,7 @@ class DrivePlanner:
                 followup_turn_direction=self.pending_followup_turn_direction or self.next_escape_turn,
                 followup_turn_speed=self.pending_followup_turn_speed or self.escape_turn_speed,
                 followup_turn_duration=self.pending_followup_turn_duration or self.escape_turn_duration,
+                probe_after_turn=True,
                 danger=danger,
                 dead_end=dead_end,
                 reason="stuck recovery reverse",
@@ -341,34 +383,104 @@ class DrivePlanner:
                     dead_end,
                     reason="post-reverse turn",
                 )
-            if dead_end or danger:
-                self.stuck_count += 1
-            else:
-                self.stuck_count = 0
 
         if self.state == DriveState.TURN:
             if obs.timestamp < self.state_deadline:
                 return self._emit_decision(obs, danger, dead_end, aeb_triggered, "turn maneuver")
-            if dead_end or danger:
-                self.stuck_count += 1
-            else:
-                self.stuck_count = 0
+            if self.pending_probe_after_turn:
+                return self._start_recover_forward(
+                    obs,
+                    danger,
+                    dead_end,
+                    reason="probe forward after escape",
+                )
 
-        if dead_end:
+        if self.state == DriveState.RECOVER_FORWARD:
+            if obs.timestamp < self.state_deadline:
+                return self._emit_decision(
+                    obs,
+                    danger,
+                    dead_end,
+                    aeb_triggered,
+                    "recover forward probe",
+                )
+
+            if front_blocked or danger:
+                self.failed_escape_count += 1
+                self.stuck_count += 1
+                dead_end = True
+
+                if self.stuck_count >= self.stuck_trigger_count:
+                    return self._enter_stuck(
+                        obs,
+                        danger,
+                        True,
+                        reason=(
+                            f"failed_escape_count={self.failed_escape_count}, "
+                            f"stuck_count={self.stuck_count}"
+                        ),
+                    )
+
+                if front_blocked:
+                    return self._start_reverse(
+                        obs=obs,
+                        speed=self.reverse_speed,
+                        duration=self.reverse_duration,
+                        followup_turn_direction=self._choose_turn_direction(
+                            obs.left_score,
+                            obs.right_score,
+                        ),
+                        followup_turn_speed=self.turn_speed,
+                        followup_turn_duration=self.turn_duration,
+                        probe_after_turn=True,
+                        danger=danger,
+                        dead_end=True,
+                        reason="probe failed, retry reverse",
+                    )
+
+                return self._start_turn(
+                    obs,
+                    self._choose_turn_direction(obs.left_score, obs.right_score),
+                    self.turn_speed,
+                    self.turn_duration,
+                    danger,
+                    True,
+                    reason="probe failed, retry turn",
+                )
+
+            self.failed_escape_count = 0
+            self.stuck_count = max(0, self.stuck_count - 1)
+            self._reset_escape_plan()
+            return self._transition(
+                obs,
+                DriveState.FORWARD,
+                "go",
+                self.forward_speed,
+                False,
+                False,
+                aeb_triggered,
+                reason="probe cleared path",
+            )
+
+        if front_blocked:
             if self.stuck_count >= self.stuck_trigger_count:
                 return self._enter_stuck(
                     obs,
                     danger,
-                    dead_end,
+                    True,
                     reason=f"stuck_count={self.stuck_count}",
                 )
             return self._start_reverse(
                 obs=obs,
                 speed=self.reverse_speed,
                 duration=self.reverse_duration,
-                followup_turn_direction=preferred_turn,
+                followup_turn_direction=self._choose_turn_direction(
+                    obs.left_score,
+                    obs.right_score,
+                ),
                 followup_turn_speed=self.turn_speed,
                 followup_turn_duration=self.turn_duration,
+                probe_after_turn=True,
                 danger=danger,
                 dead_end=dead_end,
                 reason="reverse to clear front obstacle",
@@ -384,7 +496,7 @@ class DrivePlanner:
                 )
             return self._start_turn(
                 obs,
-                preferred_turn,
+                self._choose_turn_direction(obs.left_score, obs.right_score),
                 self.turn_speed,
                 self.turn_duration,
                 danger,
@@ -392,15 +504,16 @@ class DrivePlanner:
                 reason="turn toward clearer corridor",
             )
 
+        self.failed_escape_count = 0
         self.stuck_count = max(0, self.stuck_count - 1)
-        self._clear_followup_turn()
+        self._reset_escape_plan()
         return self._transition(
             obs,
             DriveState.FORWARD,
             "go",
             self.forward_speed,
-            danger,
-            dead_end,
+            False,
+            False,
             aeb_triggered,
             reason="clear path",
         )

@@ -223,6 +223,21 @@ def ai_worker():
         ai_state["right_score"] = round(visual.right_score, 3)
         ai_state["stuck_count"] = planner.stuck_count
 
+        logger.info(
+            "[PLAN] distance_cm=%.1f left_score=%.2f center_score=%.2f "
+            "right_score=%.2f danger=%s dead_end=%s stuck_count=%d "
+            "command=%s speed=%s",
+            distance_cm,
+            visual.left_score,
+            visual.center_score,
+            visual.right_score,
+            decision.danger,
+            decision.dead_end,
+            planner.stuck_count,
+            decision.command,
+            decision.speed if decision.speed is not None else "None",
+        )
+
         annotated = overlay_runtime_status(
             visual.annotated_frame.copy(),
             decision,
